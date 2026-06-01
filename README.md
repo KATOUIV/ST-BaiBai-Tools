@@ -1,11 +1,21 @@
-# SillyTavern Mobile Resize Guard
+# 柏柏工具箱
 
-This extension packages the mobile keyboard lag fix as a third-party SillyTavern extension.
+This extension packages a small set of SillyTavern responsiveness fixes as a third-party extension.
 
 What it does:
 
 - Guards `AutoComplete` reposition work so inactive instances do not recompute layout on every mobile `resize`
 - Replaces the stock `power-user` window `resize` handler with a version that exits early on mobile before expensive autocomplete and hotswap refresh work runs
+- Speeds up opening the chat file manager for normal character chats by rendering a lightweight file-name list first, then using one full metadata request to fill in file size, message count, date, and preview text
+- Adds a SillyTavern extension settings panel with separate switches for the input responsiveness and chat file manager optimizations
+
+The chat file manager optimization only applies when:
+
+- the request is for `/api/chats/search`
+- the search query is empty
+- the current target is a normal character chat, not a group chat
+
+Keyword searches and group chats fall back to SillyTavern's original `/api/chats/search` behavior.
 
 For local testing inside this repository, the extension can live under:
 
