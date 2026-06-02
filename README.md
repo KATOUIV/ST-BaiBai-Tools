@@ -1,4 +1,4 @@
-# 柏柏工具箱
+# 柏宝箱
 
 This extension packages a small set of SillyTavern responsiveness fixes as a third-party extension.
 

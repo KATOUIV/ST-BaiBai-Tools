@@ -1,10 +1,10 @@
 {
-    "display_name": "柏柏工具箱",
+    "display_name": "柏宝箱",
     "loading_order": -1000,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "author": "Codex",
-    "version": "0.7.0",
+    "version": "0.8.0",
     "homePage": ""
 }

@@ -1,7 +1,7 @@
 <div class="bai_bai_toolkit_settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>柏柏工具箱</b>
+            <b>柏宝箱</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
@@ -12,7 +12,15 @@
                 </label>
                 <label class="checkbox_label" for="bai_bai_toolkit_fast_chat_list_enabled" title="普通角色空搜索时，先显示轻量聊天文件列表，再补齐详细信息。">
                     <input id="bai_bai_toolkit_fast_chat_list_enabled" type="checkbox" class="checkbox">
-                    <span>管理聊天文件加速</span>
+                    <span>管理聊天文件请求加速</span>
+                </label>
+                <label class="checkbox_label" for="bai_bai_toolkit_chat_list_scroll_optimization_enabled" title="减少管理聊天文件列表屏幕外条目的布局和绘制，缓解大量聊天文件时的滚动卡顿。">
+                    <input id="bai_bai_toolkit_chat_list_scroll_optimization_enabled" type="checkbox" class="checkbox">
+                    <span>管理聊天文件滚动优化</span>
+                </label>
+                <label class="checkbox_label" for="bai_bai_toolkit_chat_list_auto_clear_enabled" title="管理聊天文件窗口关闭后，清空已生成的聊天文件列表元素，减少关闭后的 DOM 占用。">
+                    <input id="bai_bai_toolkit_chat_list_auto_clear_enabled" type="checkbox" class="checkbox">
+                    <span>管理聊天文件关闭清理</span>
                 </label>
             </div>
         </div>

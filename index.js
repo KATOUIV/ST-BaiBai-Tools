@@ -5,14 +5,19 @@ import { isMobile, favsToHotswap } from '../../../RossAscends-mods.js';
 import { power_user } from '../../../power-user.js';
 import { debounce, timestampToMoment } from '../../../utils.js';
 
-const LOG_PREFIX = '[柏柏工具箱]';
+const LOG_PREFIX = '[柏宝箱]';
 const MODULE_NAME = getModuleName();
 const SETTINGS_KEY = 'baiBaiToolkit';
 const EXTENSION_KEY = '__baiBaiToolkitExtensionInstalled';
 const FAST_CHAT_SEARCH_FETCH_KEY = '__baiBaiToolkitFastChatSearchFetchPatched';
+const FAST_CHAT_LIST_SCROLL_STYLE_ID = 'bai_bai_toolkit_fast_chat_list_scroll_style';
+const CHAT_MANAGEMENT_POPUP_SELECTOR = '#shadow_select_chat_popup';
+const CHAT_MANAGEMENT_LIST_SELECTOR = '#select_chat_div';
 const defaultSettings = {
     resizeGuardEnabled: true,
     fastChatListEnabled: true,
+    chatListScrollOptimizationEnabled: true,
+    chatListAutoClearEnabled: true,
 };
 const settings = { ...defaultSettings };
 let fastChatListRequestId = 0;
@@ -27,6 +32,7 @@ if (!extensionState.installed) {
     console.debug(`${LOG_PREFIX} Installed`);
 }
 
+observeChatManagementPopupCleanup();
 applyFeatureSettings();
 jQuery(renderSettingsPanel);
 
@@ -103,6 +109,21 @@ async function renderSettingsPanel() {
             settings.fastChatListEnabled = Boolean($(this).prop('checked'));
             saveExtensionSettings();
         });
+
+    $('#bai_bai_toolkit_chat_list_scroll_optimization_enabled')
+        .prop('checked', settings.chatListScrollOptimizationEnabled)
+        .on('input', function () {
+            settings.chatListScrollOptimizationEnabled = Boolean($(this).prop('checked'));
+            saveExtensionSettings();
+            applyFastChatListScrollOptimization();
+        });
+
+    $('#bai_bai_toolkit_chat_list_auto_clear_enabled')
+        .prop('checked', settings.chatListAutoClearEnabled)
+        .on('input', function () {
+            settings.chatListAutoClearEnabled = Boolean($(this).prop('checked'));
+            saveExtensionSettings();
+        });
 }
 
 function applyFeatureSettings() {
@@ -113,6 +134,32 @@ function applyFeatureSettings() {
         restoreAutoCompletePositioning();
         restorePowerUserResizeHandler();
     }
+
+    applyFastChatListScrollOptimization();
+}
+
+function applyFastChatListScrollOptimization() {
+    const existingStyle = document.getElementById(FAST_CHAT_LIST_SCROLL_STYLE_ID);
+
+    if (!settings.chatListScrollOptimizationEnabled) {
+        existingStyle?.remove();
+        return;
+    }
+
+    if (existingStyle) {
+        return;
+    }
+
+    const style = document.createElement('style');
+    style.id = FAST_CHAT_LIST_SCROLL_STYLE_ID;
+    style.textContent = `
+${CHAT_MANAGEMENT_POPUP_SELECTOR} ${CHAT_MANAGEMENT_LIST_SELECTOR} > .select_chat_block_wrapper {
+    content-visibility: auto;
+    contain: layout paint style;
+    contain-intrinsic-size: 72px;
+}
+`;
+    document.head.append(style);
 }
 
 function patchAutoCompletePositioning() {
@@ -290,6 +337,77 @@ function isPowerUserResizeHandler(handler) {
     return source.includes('adjustAutocompleteDebounced')
         && source.includes('setHotswapsDebounced')
         && source.includes('power_user.movingUIState');
+}
+
+function observeChatManagementPopupCleanup() {
+    if (extensionState.chatManagementPopupObserver) {
+        return;
+    }
+
+    const attachObserver = () => {
+        const popup = document.querySelector(CHAT_MANAGEMENT_POPUP_SELECTOR);
+
+        if (!popup) {
+            return false;
+        }
+
+        let wasVisible = isElementDisplayed(popup);
+        const observer = new MutationObserver(() => {
+            const isVisible = isElementDisplayed(popup);
+
+            if (wasVisible && !isVisible) {
+                clearChatManagementPopupContent(popup);
+            }
+
+            wasVisible = isVisible;
+        });
+
+        observer.observe(popup, {
+            attributes: true,
+            attributeFilter: ['style', 'class'],
+        });
+
+        extensionState.chatManagementPopupObserver = observer;
+        return true;
+    };
+
+    if (attachObserver()) {
+        return;
+    }
+
+    const bodyObserver = new MutationObserver(() => {
+        if (attachObserver()) {
+            bodyObserver.disconnect();
+            extensionState.chatManagementPopupAttachObserver = null;
+        }
+    });
+
+    bodyObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+    });
+
+    extensionState.chatManagementPopupAttachObserver = bodyObserver;
+}
+
+function isElementDisplayed(element) {
+    return getComputedStyle(element).display !== 'none';
+}
+
+function clearChatManagementPopupContent(popup) {
+    if (!settings.chatListAutoClearEnabled) {
+        return;
+    }
+
+    fastChatListRequestId += 1;
+
+    const list = popup.querySelector(CHAT_MANAGEMENT_LIST_SELECTOR);
+
+    if (!list || !list.children.length) {
+        return;
+    }
+
+    list.replaceChildren();
 }
 
 function patchFastChatSearchFetch() {
