@@ -514,33 +514,57 @@ function isCurrentFastChatListRequest(requestId) {
 }
 
 function toPlaceholderChatSearchResult(chat) {
-    if (!chat || typeof chat !== 'object' || !chat.file_name) {
+    if (!chat || typeof chat !== 'object') {
+        return null;
+    }
+
+    const fileName = getChatSearchFileName(chat);
+
+    if (!fileName) {
         return null;
     }
 
     return {
-        file_name: chat.file_name,
+        file_name: fileName,
         file_size: '...',
         message_count: '...',
-        last_mes: guessLastMesFromFileName(chat.file_name),
+        last_mes: guessLastMesFromFileName(fileName),
         preview_message: '',
     };
 }
 
 function toChatSearchResult(chat) {
-    if (!chat || typeof chat !== 'object' || !chat.file_name) {
+    if (!chat || typeof chat !== 'object') {
+        return null;
+    }
+
+    const fileName = getChatSearchFileName(chat);
+
+    if (!fileName) {
         return null;
     }
 
     const messageCount = Number(chat.chat_items);
 
     return {
-        file_name: chat.file_name,
+        file_name: fileName,
         file_size: chat.file_size ?? '',
         message_count: Number.isFinite(messageCount) ? messageCount : 0,
         last_mes: normalizeLastMes(chat.last_mes),
         preview_message: getPreviewMessage(chat.mes),
     };
+}
+
+function getChatSearchFileName(chat) {
+    const value = typeof chat.file_id === 'string' && chat.file_id
+        ? chat.file_id
+        : chat.file_name;
+
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    return value.replace(/\.jsonl$/i, '');
 }
 
 function guessLastMesFromFileName(fileName) {
