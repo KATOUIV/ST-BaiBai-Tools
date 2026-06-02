@@ -11,13 +11,16 @@ const SETTINGS_KEY = 'baiBaiToolkit';
 const EXTENSION_KEY = '__baiBaiToolkitExtensionInstalled';
 const FAST_CHAT_SEARCH_FETCH_KEY = '__baiBaiToolkitFastChatSearchFetchPatched';
 const FAST_CHAT_LIST_SCROLL_STYLE_ID = 'bai_bai_toolkit_fast_chat_list_scroll_style';
+const PRESET_SCROLL_STYLE_ID = 'bai_bai_toolkit_preset_scroll_style';
 const CHAT_MANAGEMENT_POPUP_SELECTOR = '#shadow_select_chat_popup';
 const CHAT_MANAGEMENT_LIST_SELECTOR = '#select_chat_div';
+const PRESET_PROMPT_MANAGER_LIST_SELECTOR = '#completion_prompt_manager_list';
 const defaultSettings = {
     resizeGuardEnabled: true,
     fastChatListEnabled: true,
     chatListScrollOptimizationEnabled: true,
     chatListAutoClearEnabled: true,
+    presetScrollOptimizationEnabled: true,
 };
 const settings = { ...defaultSettings };
 let fastChatListRequestId = 0;
@@ -124,6 +127,14 @@ async function renderSettingsPanel() {
             settings.chatListAutoClearEnabled = Boolean($(this).prop('checked'));
             saveExtensionSettings();
         });
+
+    $('#bai_bai_toolkit_preset_scroll_optimization_enabled')
+        .prop('checked', settings.presetScrollOptimizationEnabled)
+        .on('input', function () {
+            settings.presetScrollOptimizationEnabled = Boolean($(this).prop('checked'));
+            saveExtensionSettings();
+            applyPresetScrollOptimization();
+        });
 }
 
 function applyFeatureSettings() {
@@ -136,6 +147,7 @@ function applyFeatureSettings() {
     }
 
     applyFastChatListScrollOptimization();
+    applyPresetScrollOptimization();
 }
 
 function applyFastChatListScrollOptimization() {
@@ -157,6 +169,30 @@ ${CHAT_MANAGEMENT_POPUP_SELECTOR} ${CHAT_MANAGEMENT_LIST_SELECTOR} > .select_cha
     content-visibility: auto;
     contain: layout paint style;
     contain-intrinsic-size: 72px;
+}
+`;
+    document.head.append(style);
+}
+
+function applyPresetScrollOptimization() {
+    const existingStyle = document.getElementById(PRESET_SCROLL_STYLE_ID);
+
+    if (!settings.presetScrollOptimizationEnabled) {
+        existingStyle?.remove();
+        return;
+    }
+
+    if (existingStyle) {
+        return;
+    }
+
+    const style = document.createElement('style');
+    style.id = PRESET_SCROLL_STYLE_ID;
+    style.textContent = `
+${PRESET_PROMPT_MANAGER_LIST_SELECTOR} > * {
+    content-visibility: auto;
+    contain: layout paint style;
+    contain-intrinsic-size: 96px;
 }
 `;
     document.head.append(style);
