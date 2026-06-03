@@ -1,6 +1,7 @@
 import { getRequestHeaders, saveSettingsDebounced } from '../../../../script.js';
 import { AutoComplete } from '../../../autocomplete/AutoComplete.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
+import { promptManager } from '../../../openai.js';
 import { isMobile, favsToHotswap } from '../../../RossAscends-mods.js';
 import { power_user } from '../../../power-user.js';
 import { debounce, timestampToMoment } from '../../../utils.js';
@@ -12,6 +13,7 @@ const EXTENSION_KEY = '__baiBaiToolkitExtensionInstalled';
 const FAST_CHAT_SEARCH_FETCH_KEY = '__baiBaiToolkitFastChatSearchFetchPatched';
 const FAST_CHAT_LIST_SCROLL_STYLE_ID = 'bai_bai_toolkit_fast_chat_list_scroll_style';
 const PRESET_SCROLL_STYLE_ID = 'bai_bai_toolkit_preset_scroll_style';
+const PRESET_TOGGLE_HANDLER_KEY = '__baiBaiToolkitPresetToggleHandler';
 const CHAT_MANAGEMENT_POPUP_SELECTOR = '#shadow_select_chat_popup';
 const CHAT_MANAGEMENT_LIST_SELECTOR = '#select_chat_div';
 const PRESET_PROMPT_MANAGER_LIST_SELECTOR = '#completion_prompt_manager_list';
@@ -21,6 +23,7 @@ const defaultSettings = {
     chatListScrollOptimizationEnabled: true,
     chatListAutoClearEnabled: true,
     presetScrollOptimizationEnabled: true,
+    presetToggleOptimizationEnabled: true,
 };
 const settings = { ...defaultSettings };
 let fastChatListRequestId = 0;
@@ -135,6 +138,14 @@ async function renderSettingsPanel() {
             saveExtensionSettings();
             applyPresetScrollOptimization();
         });
+
+    $('#bai_bai_toolkit_preset_toggle_optimization_enabled')
+        .prop('checked', settings.presetToggleOptimizationEnabled)
+        .on('input', function () {
+            settings.presetToggleOptimizationEnabled = Boolean($(this).prop('checked'));
+            saveExtensionSettings();
+            applyPresetToggleOptimization();
+        });
 }
 
 function applyFeatureSettings() {
@@ -148,6 +159,7 @@ function applyFeatureSettings() {
 
     applyFastChatListScrollOptimization();
     applyPresetScrollOptimization();
+    applyPresetToggleOptimization();
 }
 
 function applyFastChatListScrollOptimization() {
@@ -196,6 +208,121 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} > li.completion_prompt_manager_prompt {
 }
 `;
     document.head.append(style);
+}
+
+function applyPresetToggleOptimization() {
+    if (extensionState[PRESET_TOGGLE_HANDLER_KEY]) {
+        return;
+    }
+
+    const handler = (event) => {
+        handlePresetPromptToggleClick(event);
+    };
+
+    extensionState[PRESET_TOGGLE_HANDLER_KEY] = handler;
+    document.addEventListener('click', handler, true);
+}
+
+function handlePresetPromptToggleClick(event) {
+    if (!settings.presetToggleOptimizationEnabled) {
+        return;
+    }
+
+    const target = event.target instanceof Element ? event.target : null;
+    const toggle = target?.closest(`${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .prompt-manager-toggle-action`);
+
+    if (!toggle) {
+        return;
+    }
+
+    const row = toggle.closest('li.completion_prompt_manager_prompt');
+    const promptId = row?.dataset?.pmIdentifier;
+
+    if (!row || !promptId || !promptManager?.activeCharacter || typeof promptManager.getPromptOrderEntry !== 'function') {
+        return;
+    }
+
+    const promptOrderEntry = promptManager.getPromptOrderEntry(promptManager.activeCharacter, promptId);
+
+    if (!promptOrderEntry) {
+        return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+
+    promptOrderEntry.enabled = !promptOrderEntry.enabled;
+
+    const counts = promptManager.tokenHandler?.getCounts?.();
+
+    if (counts) {
+        counts[promptId] = null;
+    }
+
+    updatePromptToggleRow(row, toggle, promptOrderEntry.enabled);
+    updatePromptTokenCell(row, null);
+    void Promise.resolve(promptManager.saveServiceSettings?.()).catch(error => {
+        console.debug(`${LOG_PREFIX} Failed to save prompt toggle state`, error);
+    });
+
+    refreshPromptManagerTokensDebounced();
+}
+
+function updatePromptToggleRow(row, toggle, isEnabled) {
+    row.classList.toggle('completion_prompt_manager_prompt_disabled', !isEnabled);
+    toggle.classList.toggle('fa-toggle-on', isEnabled);
+    toggle.classList.toggle('fa-toggle-off', !isEnabled);
+}
+
+function updatePromptTokenCell(row, value) {
+    const tokenCell = row.querySelector('.prompt_manager_prompt_tokens');
+
+    if (!tokenCell) {
+        return;
+    }
+
+    const displayValue = value ? String(value) : '-';
+    const warningSpan = tokenCell.querySelector('span') ?? document.createElement('span');
+    warningSpan.className = '';
+    warningSpan.title = '';
+    warningSpan.textContent = ' ';
+    tokenCell.dataset.pmTokens = displayValue;
+    tokenCell.replaceChildren(warningSpan, document.createTextNode(displayValue));
+}
+
+const refreshPromptManagerTokensDebounced = debounce(async () => {
+    if (!settings.presetToggleOptimizationEnabled || !promptManager?.tryGenerate) {
+        return;
+    }
+
+    try {
+        await promptManager.tryGenerate();
+        updatePromptManagerTokenDisplay();
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} Failed to refresh prompt manager token counts`, error);
+    }
+}, 1000);
+
+function updatePromptManagerTokenDisplay() {
+    const counts = promptManager?.tokenHandler?.getCounts?.();
+    const list = document.querySelector(PRESET_PROMPT_MANAGER_LIST_SELECTOR);
+
+    if (!counts || !list) {
+        return;
+    }
+
+    for (const row of list.querySelectorAll('li.completion_prompt_manager_prompt[data-pm-identifier]')) {
+        updatePromptTokenCell(row, counts[row.dataset.pmIdentifier] ?? 0);
+    }
+
+    const header = document.querySelector('.completion_prompt_manager_header');
+    const totalContainer = header?.querySelector(':scope > div:last-child');
+    const totalLabel = totalContainer?.querySelector('span');
+
+    if (totalContainer && totalLabel) {
+        totalContainer.replaceChildren(totalLabel, document.createTextNode(` ${promptManager.tokenUsage ?? 0} `));
+    }
 }
 
 function patchAutoCompletePositioning() {
