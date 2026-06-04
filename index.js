@@ -46,12 +46,13 @@ const CHAT_DELETE_GENERATION_ACTION_HANDLER_KEY = '__baiBaiToolkitChatDeleteGene
 const WELCOME_RECENT_CHAT_DIRECT_OPEN_HANDLER_KEY = '__baiBaiToolkitWelcomeRecentChatDirectOpenHandler';
 const MOBILE_AUTO_KEYBOARD_HANDLER_KEY = '__baiBaiToolkitMobileAutoKeyboardHandler';
 const MOBILE_AUTO_KEYBOARD_FOCUS_PATCH_KEY = '__baiBaiToolkitMobileAutoKeyboardFocusPatched';
+const MOBILE_AUTO_KEYBOARD_JQUERY_FOCUS_PATCH_KEY = '__baiBaiToolkitMobileAutoKeyboardJQueryFocusPatched';
+const MOBILE_AUTO_KEYBOARD_JQUERY_TRIGGER_PATCH_KEY = '__baiBaiToolkitMobileAutoKeyboardJQueryTriggerPatched';
 const MOBILE_MESSAGE_EDIT_SCROLL_TOP_PATCH_KEY = '__baiBaiToolkitMessageEditScrollTopPatched';
 const CHAT_DELETE_EDIT_WINDOW_MS = 5000;
 const MOBILE_AUTO_KEYBOARD_DIRECT_FOCUS_WINDOW_MS = 1500;
 const MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_TOLERANCE = 2;
 const MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_DELAYS = [0, 50, 160];
-const MOBILE_CHAT_ENTRY_KEYBOARD_SUPPRESSION_WINDOW_MS = 3000;
 const CHAT_GENERATION_ACTION_SELECTOR = '#send_but, #option_regenerate, #option_continue, #option_impersonate, #mes_continue, #mes_impersonate';
 const CHAT_MESSAGE_EDIT_SELECTOR = '#chat .mes_edit';
 const WELCOME_RECENT_CHAT_SELECTOR = '#chat .welcomePanel .recentChat';
@@ -766,6 +767,7 @@ function applyChatDeleteEditFlowOptimization() {
 
 function applyMobileAutoKeyboardSuppression() {
     patchMobileAutoKeyboardFocus();
+    patchMobileAutoKeyboardJQueryFocus();
 
     if (extensionState[MOBILE_AUTO_KEYBOARD_HANDLER_KEY]) {
         return;
@@ -777,22 +779,24 @@ function applyMobileAutoKeyboardSuppression() {
     const focusInHandler = (event) => {
         handleMobileAutoKeyboardFocusIn(event);
     };
-    const chatEntryFocusHandler = () => {
-        markMobileChatEntryKeyboardSuppressionWindow();
+    const pageLifecycleHandler = (event) => {
+        handleMobileAutoKeyboardPageLifecycle(event);
     };
 
     extensionState[MOBILE_AUTO_KEYBOARD_HANDLER_KEY] = {
         directFocusIntentHandler,
         focusInHandler,
-        chatEntryFocusHandler,
+        pageLifecycleHandler,
     };
 
     document.addEventListener('pointerdown', directFocusIntentHandler, true);
     document.addEventListener('mousedown', directFocusIntentHandler, true);
     document.addEventListener('touchstart', directFocusIntentHandler, true);
     document.addEventListener('focusin', focusInHandler, true);
-    eventSource.on(event_types.CHAT_LOADED, chatEntryFocusHandler);
-    eventSource.on(event_types.CHAT_CHANGED, chatEntryFocusHandler);
+    document.addEventListener('visibilitychange', pageLifecycleHandler, true);
+    window.addEventListener('pagehide', pageLifecycleHandler, true);
+    window.addEventListener('pageshow', pageLifecycleHandler, true);
+    window.addEventListener('focus', pageLifecycleHandler, true);
 }
 
 function applyMobileMessageEditScrollGuard() {
@@ -1232,6 +1236,44 @@ function patchMobileAutoKeyboardFocus() {
     HTMLElement.prototype.focus = guardedFocus;
 }
 
+function patchMobileAutoKeyboardJQueryFocus() {
+    const jQueryPrototype = globalThis.jQuery?.fn || globalThis.$?.fn;
+
+    if (!jQueryPrototype) {
+        return;
+    }
+
+    const originalFocus = jQueryPrototype.focus;
+    if (typeof originalFocus === 'function' && !originalFocus[MOBILE_AUTO_KEYBOARD_JQUERY_FOCUS_PATCH_KEY]) {
+        function guardedJQueryFocus(...args) {
+            if (args.length === 0 && shouldSuppressMobileAutoKeyboardJQueryCollection(this)) {
+                return this;
+            }
+
+            return originalFocus.apply(this, args);
+        }
+
+        guardedJQueryFocus[MOBILE_AUTO_KEYBOARD_JQUERY_FOCUS_PATCH_KEY] = true;
+        guardedJQueryFocus.__baiBaiToolkitOriginalFocus = originalFocus;
+        jQueryPrototype.focus = guardedJQueryFocus;
+    }
+
+    const originalTrigger = jQueryPrototype.trigger;
+    if (typeof originalTrigger === 'function' && !originalTrigger[MOBILE_AUTO_KEYBOARD_JQUERY_TRIGGER_PATCH_KEY]) {
+        function guardedJQueryTrigger(...args) {
+            if (isMobileAutoKeyboardFocusTrigger(args[0]) && shouldSuppressMobileAutoKeyboardJQueryCollection(this)) {
+                return this;
+            }
+
+            return originalTrigger.apply(this, args);
+        }
+
+        guardedJQueryTrigger[MOBILE_AUTO_KEYBOARD_JQUERY_TRIGGER_PATCH_KEY] = true;
+        guardedJQueryTrigger.__baiBaiToolkitOriginalTrigger = originalTrigger;
+        jQueryPrototype.trigger = guardedJQueryTrigger;
+    }
+}
+
 function markMobileAutoKeyboardDirectFocusIntent(event) {
     if (!isMobile()) {
         return;
@@ -1332,10 +1374,7 @@ function isMobileAutoKeyboardSuppressionTarget(element) {
         settings.mobileAutoKeyboardSuppressionEnabled
         && (
             element.matches(MOBILE_AUTO_KEYBOARD_TARGET_SELECTOR)
-            || (
-                element.matches(MOBILE_CHAT_ENTRY_KEYBOARD_TARGET_SELECTOR)
-                && isMobileChatEntryKeyboardSuppressionWindowActive()
-            )
+            || element.matches(MOBILE_CHAT_ENTRY_KEYBOARD_TARGET_SELECTOR)
         )
     );
 }
@@ -1347,16 +1386,60 @@ function isRecentMobileAutoKeyboardDirectFocusIntent(element) {
     );
 }
 
-function markMobileChatEntryKeyboardSuppressionWindow() {
+function shouldSuppressMobileAutoKeyboardJQueryCollection(collection) {
+    const element = collection?.[0];
+    return element instanceof HTMLElement && shouldSuppressMobileAutoKeyboardFocus(element);
+}
+
+function isMobileAutoKeyboardFocusTrigger(type) {
+    const eventType = typeof type === 'string'
+        ? type
+        : typeof type?.type === 'string'
+            ? type.type
+            : '';
+    const normalizedType = eventType.split('.')[0];
+
+    return normalizedType === 'focus' || normalizedType === 'focusin';
+}
+
+function handleMobileAutoKeyboardPageLifecycle(event) {
     if (!settings.mobileAutoKeyboardSuppressionEnabled || !isMobile()) {
         return;
     }
 
-    extensionState.mobileChatEntryKeyboardSuppressUntil = Date.now() + MOBILE_CHAT_ENTRY_KEYBOARD_SUPPRESSION_WINDOW_MS;
+    if (event?.type === 'pagehide' || document.visibilityState === 'hidden') {
+        clearMobileAutoKeyboardDirectFocusIntent();
+    }
+
+    scheduleMobileChatEntryKeyboardBlur();
 }
 
-function isMobileChatEntryKeyboardSuppressionWindowActive() {
-    return Date.now() <= Number(extensionState.mobileChatEntryKeyboardSuppressUntil || 0);
+function scheduleMobileChatEntryKeyboardBlur() {
+    blurMobileChatEntryKeyboardTargetIfNeeded();
+
+    const blurAgain = () => {
+        blurMobileChatEntryKeyboardTargetIfNeeded();
+    };
+
+    if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(blurAgain);
+    } else {
+        setTimeout(blurAgain, 0);
+    }
+
+    setTimeout(blurAgain, 100);
+}
+
+function blurMobileChatEntryKeyboardTargetIfNeeded() {
+    const target = document.activeElement;
+    if (target instanceof HTMLElement && target.matches(MOBILE_CHAT_ENTRY_KEYBOARD_TARGET_SELECTOR) && shouldSuppressMobileAutoKeyboardFocus(target)) {
+        target.blur();
+    }
+}
+
+function clearMobileAutoKeyboardDirectFocusIntent() {
+    extensionState.mobileAutoKeyboardDirectFocusTarget = null;
+    extensionState.mobileAutoKeyboardDirectFocusAt = 0;
 }
 
 function handleChatDeleteEditFlowClick(event) {
