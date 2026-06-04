@@ -4,7 +4,8 @@
     "requires": [],
     "optional": [],
     "js": "index.js",
-    "author": "Codex",
+    "author": "柏柏",
     "version": "0.16.7",
-    "homePage": ""
+    "homePage": "",
+    "auto_update": false
 }

@@ -1,17 +1,19 @@
 import { event_types, eventSource, getRequestHeaders, saveSettingsDebounced } from '../../../../script.js';
 import { AutoComplete } from '../../../autocomplete/AutoComplete.js';
-import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
+import { extension_settings, extensionTypes, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { oai_settings, openai_setting_names, promptManager } from '../../../openai.js';
 import { t } from '../../../i18n.js';
-import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
+import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 import { INJECTION_POSITION } from '../../../PromptManager.js';
 import { isMobile, favsToHotswap } from '../../../RossAscends-mods.js';
 import { power_user } from '../../../power-user.js';
 import { renderTemplateAsync } from '../../../templates.js';
+import { isAdmin } from '../../../user.js';
 import { debounce, escapeHtml, resetScrollHeight, timestampToMoment } from '../../../utils.js';
 
 const LOG_PREFIX = '[柏宝箱]';
 const MODULE_NAME = getModuleName();
+const EXTENSION_ID = getExtensionId();
 const SETTINGS_KEY = 'baiBaiToolkit';
 const EXTENSION_KEY = '__baiBaiToolkitExtensionInstalled';
 const FAST_CHAT_SEARCH_FETCH_KEY = '__baiBaiToolkitFastChatSearchFetchPatched';
@@ -40,6 +42,8 @@ const WORLD_INFO_ENTRY_DRAWER_SELECTOR = '#world_popup_entries_list > .world_ent
 const WORLD_INFO_LAZY_SELECT2_SELECTOR = '#world_popup_entries_list .world_entry_edit select[name="characterFilter"], #world_popup_entries_list .world_entry_edit select[name="triggers"]';
 const WORLD_INFO_LAZY_SELECT2_DATASET_KEY = 'baiBaiToolkitLazySelect2';
 const WORLD_INFO_DEFERRED_OPTIONS_DATASET_KEY = 'baiBaiToolkitDeferredOptions';
+const SILENT_UPDATE_STORAGE_KEY = 'bai_bai_toolkit_silent_update';
+const SILENT_UPDATE_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const FORCE_EDIT_PROMPTS = new Set([
     'charDescription',
     'charPersonality',
@@ -80,6 +84,7 @@ let fastChatListRequestId = 0;
 const extensionState = getExtensionState();
 
 initializeSettings();
+initializeExtensionUpdateCheck();
 
 if (!extensionState.installed) {
     extensionState.installed = true;
@@ -114,6 +119,10 @@ function getModuleName() {
         .replace(/\/index\.js$/i, '');
 }
 
+function getExtensionId() {
+    return MODULE_NAME.split('/').pop() || MODULE_NAME;
+}
+
 function initializeSettings() {
     if (!extension_settings[SETTINGS_KEY] || typeof extension_settings[SETTINGS_KEY] !== 'object') {
         extension_settings[SETTINGS_KEY] = {};
@@ -146,6 +155,235 @@ function saveExtensionSettings() {
     saveSettingsDebounced();
 }
 
+function initializeExtensionUpdateCheck() {
+    if (readSilentUpdateState()?.updateAvailable === true) {
+        applyUpdateAvailableVisualState(true);
+        queueExtensionUpdatePrompt();
+        return;
+    }
+
+    void checkForSilentExtensionUpdate()
+        .catch((error) => console.debug(`${LOG_PREFIX} Silent update failed`, error));
+}
+
+async function checkForSilentExtensionUpdate({ force = false } = {}) {
+    if (!force && !shouldCheckForSilentExtensionUpdate()) {
+        return null;
+    }
+
+    if (extensionState.silentUpdatePromise) {
+        return extensionState.silentUpdatePromise;
+    }
+
+    extensionState.silentUpdatePromise = runSilentExtensionUpdate()
+        .finally(() => {
+            extensionState.silentUpdatePromise = null;
+        });
+
+    return extensionState.silentUpdatePromise;
+}
+
+async function runSilentExtensionUpdate() {
+    const response = await getCurrentExtensionVersion();
+
+    if (!response.ok) {
+        throw new Error(await getResponseErrorMessage(response));
+    }
+
+    const data = await response.json();
+    const updateAvailable = data.isUpToDate === false;
+
+    setCachedUpdateAvailable(updateAvailable);
+    applyUpdateAvailableVisualState(updateAvailable);
+
+    if (updateAvailable) {
+        queueExtensionUpdatePrompt();
+    }
+
+    return data;
+}
+
+async function getCurrentExtensionVersion() {
+    return fetchCurrentExtensionEndpoint('/api/extensions/version');
+}
+
+async function updateCurrentExtension() {
+    return fetchCurrentExtensionEndpoint('/api/extensions/update');
+}
+
+async function fetchCurrentExtensionEndpoint(endpoint) {
+    const type = getInstalledExtensionType();
+
+    if (!type || type === 'system') {
+        return new Response('Extension is not installed as an updateable third-party extension.', { status: 404 });
+    }
+
+    if (type === 'global' && !isAdmin()) {
+        return new Response('Forbidden: No permission to update global extensions.', { status: 403 });
+    }
+
+    return fetch(endpoint, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            extensionName: EXTENSION_ID,
+            global: type === 'global',
+        }),
+    });
+}
+
+function setCachedUpdateAvailable(updateAvailable) {
+    writeSilentUpdateState({
+        ...readSilentUpdateState(),
+        checkedAt: Date.now(),
+        updateAvailable: Boolean(updateAvailable),
+    });
+}
+
+function applyUpdateAvailableVisualState(updateAvailable) {
+    const isAvailable = Boolean(updateAvailable);
+    $('.bai_bai_toolkit_update_badge').toggle(isAvailable);
+    $('.bai_bai_toolkit_update_button').toggle(isAvailable);
+}
+
+async function promptForExtensionUpdate(updateButton = null) {
+    if (extensionState.updatePromptPromise) {
+        return extensionState.updatePromptPromise;
+    }
+
+    extensionState.updatePromptPromise = runExtensionUpdatePrompt(updateButton)
+        .finally(() => {
+            extensionState.updatePromptPromise = null;
+        });
+
+    return extensionState.updatePromptPromise;
+}
+
+function queueExtensionUpdatePrompt() {
+    jQuery(() => {
+        void promptForExtensionUpdate()
+            .catch((error) => console.debug(`${LOG_PREFIX} Update prompt failed`, error));
+    });
+}
+
+async function runExtensionUpdatePrompt(updateButton) {
+    const button = updateButton?.length ? updateButton : null;
+    let shouldResetButton = Boolean(button);
+
+    if (button) {
+        button.addClass('disabled');
+    }
+
+    try {
+        const confirmed = await confirmExtensionUpdate();
+        if (!confirmed) {
+            return false;
+        }
+
+        setUpdateButtonLoading(button);
+        await performCurrentExtensionUpdate();
+        shouldResetButton = false;
+        return true;
+    } catch (error) {
+        console.error(`${LOG_PREFIX} Update failed:`, error);
+        toastr.error(`更新失败: ${error.message}`);
+        return false;
+    } finally {
+        if (shouldResetButton) {
+            resetUpdateButton(button);
+        }
+    }
+}
+
+async function confirmExtensionUpdate() {
+    const content = `
+        <div class="bai_bai_toolkit_update_prompt">
+            <h3>柏宝箱发现新版本</h3>
+            <p>检测到插件有可用更新。要现在更新吗？</p>
+            <p>更新完成后，SillyTavern 会自动刷新页面。</p>
+        </div>
+    `;
+    const result = await callGenericPopup(content, POPUP_TYPE.CONFIRM, '', {
+        okButton: '更新',
+        cancelButton: '取消',
+    });
+
+    return result === POPUP_RESULT.AFFIRMATIVE;
+}
+
+async function performCurrentExtensionUpdate() {
+    const response = await updateCurrentExtension();
+    if (!response.ok) {
+        throw new Error(await getResponseErrorMessage(response));
+    }
+
+    setCachedUpdateAvailable(false);
+    applyUpdateAvailableVisualState(false);
+    toastr.success(t`Extension updated successfully. Reloading...`);
+    setTimeout(() => location.reload(), 1000);
+}
+
+function setUpdateButtonLoading(button) {
+    if (!button?.length) {
+        return;
+    }
+
+    button.addClass('disabled');
+    button.find('span').text('更新中...');
+    button.find('i').removeClass('fa-download').addClass('fa-spinner fa-spin');
+}
+
+function resetUpdateButton(button) {
+    if (!button?.length) {
+        return;
+    }
+
+    button.removeClass('disabled');
+    button.find('span').text('更新');
+    button.find('i').removeClass('fa-spinner fa-spin').addClass('fa-download');
+}
+
+function getInstalledExtensionType(extensionId = EXTENSION_ID) {
+    const fullExtensionId = Object.keys(extensionTypes).find((id) => {
+        return id === extensionId || (id.startsWith('third-party') && id.endsWith(extensionId));
+    });
+
+    return fullExtensionId ? extensionTypes[fullExtensionId] : null;
+}
+
+async function getResponseErrorMessage(response) {
+    const text = await response.text();
+
+    return text || response.statusText || `HTTP ${response.status}`;
+}
+
+function shouldCheckForSilentExtensionUpdate() {
+    const state = readSilentUpdateState();
+    const checkedAt = Number(state?.checkedAt ?? 0);
+
+    if (typeof state?.updateAvailable !== 'boolean') {
+        return true;
+    }
+
+    return !Number.isFinite(checkedAt) || Date.now() - checkedAt >= SILENT_UPDATE_INTERVAL_MS;
+}
+
+function readSilentUpdateState() {
+    try {
+        return JSON.parse(localStorage.getItem(SILENT_UPDATE_STORAGE_KEY) || '{}');
+    } catch {
+        return {};
+    }
+}
+
+function writeSilentUpdateState(state) {
+    try {
+        localStorage.setItem(SILENT_UPDATE_STORAGE_KEY, JSON.stringify(state));
+    } catch {
+        // Ignore storage errors; updates should never block extension startup.
+    }
+}
+
 async function renderSettingsPanel() {
     const root = $('#extensions_settings2');
 
@@ -162,6 +400,9 @@ async function renderSettingsPanel() {
 
     const template = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
     container.empty().append(template);
+
+    // 初始化版本信息和更新逻辑
+    initializeUpdateUI(container);
 
     $('#bai_bai_toolkit_resize_guard_enabled')
         .prop('checked', settings.resizeGuardEnabled)
@@ -245,6 +486,72 @@ async function renderSettingsPanel() {
             settings.presetAutoSaveAfterPromptEditEnabled = Boolean($(this).prop('checked'));
             saveExtensionSettings();
         });
+}
+
+async function initializeUpdateUI(container) {
+    const versionSpan = container.find('.bai_bai_toolkit_current_version');
+    const updateButton = container.find('.bai_bai_toolkit_update_button');
+    const updateStatus = container.find('.bai_bai_toolkit_update_status');
+    const badge = container.find('.bai_bai_toolkit_update_badge');
+
+    // 获取并显示当前版本号
+    try {
+        const manifestResponse = await fetch(`/scripts/extensions/${MODULE_NAME}/manifest.json`);
+        if (manifestResponse.ok) {
+            const manifest = await manifestResponse.json();
+            versionSpan.text(manifest.version || '未知');
+        }
+    } catch (e) {
+        console.warn(`${LOG_PREFIX} 无法获取版本号`, e);
+        versionSpan.text('未知');
+    }
+
+    // 检查更新
+    updateStatus.text('检查更新中...');
+
+    // 如果已经有缓存的更新状态，直接使用
+    const state = readSilentUpdateState();
+    if (state && state.updateAvailable) {
+        showUpdateAvailable();
+    } else if (!shouldCheckForSilentExtensionUpdate()) {
+        showNoUpdateAvailable();
+    } else {
+        // 后台检查更新
+        checkUpdateAndShowUI();
+    }
+
+    async function checkUpdateAndShowUI() {
+        try {
+            const data = await checkForSilentExtensionUpdate({ force: true });
+            if (data?.isUpToDate === false) {
+                showUpdateAvailable();
+            } else {
+                showNoUpdateAvailable();
+            }
+        } catch (e) {
+            updateStatus.text('检查更新出错');
+        }
+    }
+
+    function showUpdateAvailable() {
+        updateStatus.text('');
+        updateButton.show();
+        badge.show();
+    }
+
+    function showNoUpdateAvailable() {
+        updateButton.hide();
+        badge.hide();
+        updateStatus.text('已是最新版本');
+        setTimeout(() => updateStatus.text(''), 3000);
+    }
+
+    // 绑定更新按钮点击事件
+    updateButton.on('click', async function() {
+        if ($(this).hasClass('disabled')) return;
+
+        await promptForExtensionUpdate($(this));
+    });
 }
 
 function applyFeatureSettings() {

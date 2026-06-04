@@ -1,11 +1,21 @@
 <div class="bai_bai_toolkit_settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>柏宝箱</b>
+            <b>柏宝箱<small class="bai_bai_toolkit_update_badge" style="display: none; color: var(--SmartThemeBodyColor); background: var(--SmartThemeQuoteColor); border-radius: 4px; padding: 2px 4px; margin-left: 4px; font-size: 0.8em;">new</small></b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
             <div class="flex-container flexFlowColumn">
+                <div class="bai_bai_toolkit_version_info flex-container justifySpaceBetween alignItemCenter" style="margin-bottom: 10px; padding: 0 5px;">
+                    <span style="opacity: 0.7;">当前版本: <span class="bai_bai_toolkit_current_version"></span></span>
+                    <div class="bai_bai_toolkit_update_container flex-container alignItemCenter">
+                        <span class="bai_bai_toolkit_update_status" style="margin-right: 10px; opacity: 0.7;"></span>
+                        <div class="menu_button menu_button_icon bai_bai_toolkit_update_button" style="display: none;" title="更新扩展">
+                            <i class="fa-solid fa-download"></i>
+                            <span>更新</span>
+                        </div>
+                    </div>
+                </div>
                 <label class="checkbox_label" for="bai_bai_toolkit_resize_guard_enabled" title="减少输入框和自动补全在窗口尺寸变化时的重复布局计算。">
                     <input id="bai_bai_toolkit_resize_guard_enabled" type="checkbox" class="checkbox">
                     <span>输入框响应优化</span>
