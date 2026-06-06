@@ -69,6 +69,8 @@ const LONG_CHAT_DOM_RENDER_MESSAGE_COUNT_THRESHOLD = 20;
 const LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_SETTLE_MS = 900;
 const LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_STABLE_FRAMES = 6;
 const LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_TOLERANCE = 8;
+const LONG_CHAT_DOM_RENDER_UNCONTAINED_TAIL_MESSAGES = 3;
+const LONG_CHAT_DOM_RENDER_GENERATION_ANCHOR_RELEASE_MS = 1200;
 const LONG_CHAT_DOM_RENDER_BOTTOM_ANCHOR_CLASS = 'bai-bai-toolkit-long-chat-bottom-anchor';
 const LONG_CHAT_DOM_RENDER_BOTTOM_ANCHORED_CLASS = 'bai-bai-toolkit-long-chat-bottom-anchored';
 const LONG_CHAT_DOM_RENDER_HEIGHT_VAR = '--bai-bai-toolkit-long-chat-mes-height';
@@ -918,6 +920,7 @@ function recordPerformanceTraceLongDomRefresh(info) {
             `optimized=${info.optimized ? 'yes' : 'no'}`,
             `contained=${info.contained || 0}`,
             `editing=${info.editing || 0}`,
+            `tail=${info.tail || 0}`,
             `cached=${info.cached || 0}`,
             `estimated=${info.estimated || 0}`,
         ].join(' '),
@@ -2162,6 +2165,20 @@ function installLongChatDomRenderOptimization() {
         };
         const chatMutationHandler = () => {
             scheduleLongChatDomRenderRefresh({ autoScroll: false, reason: 'chat-update' });
+            scheduleLongChatDomRenderGenerationAnchor('chat-update');
+        };
+        const generationStartedHandler = () => {
+            state.generationActive = true;
+            state.generationAnchorEnabled = shouldStartLongChatDomRenderGenerationAnchor();
+            if (state.generationAnchorEnabled) {
+                state.userScrolledAway = false;
+                scheduleLongChatDomRenderGenerationAnchor('generation-started');
+            }
+            scheduleLongChatDomRenderRefresh({ autoScroll: false, reason: 'generation-started' });
+        };
+        const generationEndedHandler = () => {
+            state.generationActive = false;
+            releaseLongChatDomRenderGenerationAnchor();
         };
 
         addLongChatDomRenderEventHandler(event_types.CHAT_CHANGED, chatLoadHandler);
@@ -2171,6 +2188,9 @@ function installLongChatDomRenderOptimization() {
         addLongChatDomRenderEventHandler(event_types.CHARACTER_MESSAGE_RENDERED, chatMutationHandler);
         addLongChatDomRenderEventHandler(event_types.MESSAGE_UPDATED, chatMutationHandler);
         addLongChatDomRenderEventHandler(event_types.MESSAGE_DELETED, chatMutationHandler);
+        addLongChatDomRenderEventHandler(event_types.GENERATION_STARTED, generationStartedHandler);
+        addLongChatDomRenderEventHandler(event_types.GENERATION_STOPPED, generationEndedHandler);
+        addLongChatDomRenderEventHandler(event_types.GENERATION_ENDED, generationEndedHandler);
 
         state.installed = true;
     }
@@ -2199,6 +2219,12 @@ function removeLongChatDomRenderOptimization() {
     state.eventHandlers = [];
     state.installed = false;
     state.userScrolledAway = false;
+    state.generationActive = false;
+    state.generationAnchorEnabled = false;
+    clearTimeout(state.generationAnchorTimer);
+    clearTimeout(state.generationAnchorReleaseTimer);
+    state.generationAnchorTimer = null;
+    state.generationAnchorReleaseTimer = null;
 
     detachLongChatDomRenderChatObservers();
     state.resizeObserver?.disconnect();
@@ -2341,6 +2367,7 @@ function refreshLongChatDomRenderOptimization({ reason = '' } = {}) {
         optimized: false,
         contained: 0,
         editing: 0,
+        tail: 0,
         cached: 0,
         estimated: 0,
     };
@@ -2358,15 +2385,26 @@ function refreshLongChatDomRenderOptimization({ reason = '' } = {}) {
 
     const state = getLongChatDomRenderState();
     const editingMessages = getLongChatDomRenderEditingMessages(chatElement);
+    const uncontainedTailMessages = getLongChatDomRenderUncontainedTailMessages(messages, chat.length);
     const chatWidth = chatElement.clientWidth || window.innerWidth;
     for (const element of messages) {
-        if (shouldOptimize) {
+        if (shouldOptimize && !uncontainedTailMessages.has(element)) {
             applyLongChatDomRenderToMessage(element, chat, refreshStats, { editingMessages, chatWidth });
             state.resizeObserver?.observe(element);
         } else {
+            if (shouldOptimize && uncontainedTailMessages.has(element)) {
+                refreshStats.tail += 1;
+            }
             cleanupLongChatDomRenderMessage(element);
             state.resizeObserver?.unobserve(element);
         }
+    }
+
+    if (shouldOptimize && isLongChatDomRenderGenerationActive()) {
+        scheduleLongChatDomRenderGenerationAnchor(reason || 'refresh');
+    } else if (!shouldOptimize && state.generationAnchorEnabled) {
+        state.generationAnchorEnabled = false;
+        removeLongChatDomRenderBottomAnchorIfIdle(state);
     }
 
     refreshStats.duration = performance.now() - startedAt;
@@ -2417,6 +2455,27 @@ function applyLongChatDomRenderToMessage(element, chat, refreshStats = null, opt
     if (refreshStats) {
         refreshStats.contained += 1;
     }
+}
+
+function getLongChatDomRenderUncontainedTailMessages(messages, chatLength = 0) {
+    const tailMessages = new Set();
+    const tailCount = LONG_CHAT_DOM_RENDER_UNCONTAINED_TAIL_MESSAGES;
+    const numericChatLength = Number(chatLength || 0);
+    const tailStartIndex = Math.max(0, numericChatLength - tailCount);
+
+    for (const element of messages) {
+        const mesIdValue = element.getAttribute('mesid');
+        const mesId = Number(mesIdValue);
+        if (mesIdValue && Number.isInteger(mesId) && mesId >= tailStartIndex) {
+            tailMessages.add(element);
+        }
+    }
+
+    for (const element of messages.slice(-tailCount)) {
+        tailMessages.add(element);
+    }
+
+    return tailMessages;
 }
 
 function getLongChatDomRenderEditingMessages(chatElement) {
@@ -2503,6 +2562,117 @@ function cleanupLongChatDomRenderMessage(element) {
 
     element.classList.remove('bai-bai-toolkit-long-chat-contained');
     element.style.removeProperty(LONG_CHAT_DOM_RENDER_HEIGHT_VAR);
+}
+
+function isLongChatDomRenderGenerationActive() {
+    const state = getLongChatDomRenderState();
+    if (state.generationActive) {
+        return true;
+    }
+
+    if (typeof scriptModule.isGenerating === 'function') {
+        try {
+            return Boolean(scriptModule.isGenerating());
+        } catch {
+            return false;
+        }
+    }
+
+    return false;
+}
+
+function isLongChatDomRenderOptimizedChat(chat) {
+    return chat instanceof HTMLElement
+        && (chat.classList.contains('bai-bai-toolkit-long-chat-render-optimized')
+            || Boolean(chat.querySelector('.mes.bai-bai-toolkit-long-chat-contained')));
+}
+
+function shouldStartLongChatDomRenderGenerationAnchor() {
+    const chat = document.querySelector('#chat');
+    return chat instanceof HTMLElement
+        && settings.longChatDomRenderOptimizationEnabled
+        && !isWelcomePageDisplayed(chat)
+        && isLongChatDomRenderOptimizedChat(chat)
+        && isLongChatDomRenderAtBottom(chat);
+}
+
+function scheduleLongChatDomRenderGenerationAnchor() {
+    if (!settings.longChatDomRenderOptimizationEnabled) {
+        return;
+    }
+
+    const state = getLongChatDomRenderState();
+    if (!state.generationAnchorEnabled && !isLongChatDomRenderGenerationActive()) {
+        return;
+    }
+
+    clearTimeout(state.generationAnchorReleaseTimer);
+    state.generationAnchorReleaseTimer = null;
+    clearTimeout(state.generationAnchorTimer);
+    state.generationAnchorTimer = setTimeout(() => {
+        state.generationAnchorTimer = null;
+        updateLongChatDomRenderGenerationAnchor();
+    }, 40);
+}
+
+function updateLongChatDomRenderGenerationAnchor() {
+    const state = getLongChatDomRenderState();
+    const chat = document.querySelector('#chat');
+
+    if (!(chat instanceof HTMLElement)
+        || !settings.longChatDomRenderOptimizationEnabled
+        || isWelcomePageDisplayed(chat)
+        || !isLongChatDomRenderGenerationActive()
+        || !isLongChatDomRenderOptimizedChat(chat)) {
+        state.generationAnchorEnabled = false;
+        removeLongChatDomRenderBottomAnchorIfIdle(state);
+        return;
+    }
+
+    const atBottom = isLongChatDomRenderAtBottom(chat);
+    if (!state.generationAnchorEnabled && !atBottom) {
+        return;
+    }
+
+    if (!atBottom) {
+        if (!state.generationAnchorAwayStartedAt) {
+            state.generationAnchorAwayStartedAt = performance.now();
+        }
+        if (performance.now() - Number(state.generationAnchorAwayStartedAt || 0) > 250) {
+            state.generationAnchorEnabled = false;
+            removeLongChatDomRenderBottomAnchorIfIdle(state);
+        } else {
+            scheduleLongChatDomRenderGenerationAnchor('scroll-away');
+        }
+        return;
+    }
+
+    state.generationAnchorAwayStartedAt = 0;
+    state.generationAnchorEnabled = true;
+    ensureLongChatDomRenderBottomAnchor(chat, state);
+}
+
+function releaseLongChatDomRenderGenerationAnchor() {
+    const state = getLongChatDomRenderState();
+    state.generationAnchorEnabled = false;
+    state.generationAnchorAwayStartedAt = 0;
+    clearTimeout(state.generationAnchorTimer);
+    state.generationAnchorTimer = null;
+    clearTimeout(state.generationAnchorReleaseTimer);
+    state.generationAnchorReleaseTimer = setTimeout(() => {
+        state.generationAnchorReleaseTimer = null;
+        if (!isLongChatDomRenderGenerationActive()) {
+            removeLongChatDomRenderBottomAnchorIfIdle(state);
+        }
+    }, LONG_CHAT_DOM_RENDER_GENERATION_ANCHOR_RELEASE_MS);
+}
+
+function removeLongChatDomRenderBottomAnchorIfIdle(state = getLongChatDomRenderState()) {
+    if (state.autoScrollChatElement instanceof HTMLElement) {
+        return;
+    }
+
+    removeLongChatDomRenderBottomAnchor(state);
 }
 
 function scheduleLongChatDomRenderScrollToBottom(reason = '') {
@@ -2652,7 +2822,18 @@ function handleLongChatDomRenderScroll(chat) {
         return;
     }
 
-    state.userScrolledAway = !isLongChatDomRenderAtBottom(chat);
+    const atBottom = isLongChatDomRenderAtBottom(chat);
+    state.userScrolledAway = !atBottom;
+    if (state.generationAnchorEnabled) {
+        if (atBottom) {
+            state.generationAnchorAwayStartedAt = 0;
+        } else {
+            if (!state.generationAnchorAwayStartedAt) {
+                state.generationAnchorAwayStartedAt = performance.now();
+            }
+            scheduleLongChatDomRenderGenerationAnchor('scroll');
+        }
+    }
 }
 
 function isLongChatDomRenderAtBottom(chat) {
