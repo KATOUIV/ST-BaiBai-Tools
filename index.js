@@ -138,6 +138,7 @@ const LOW_ST_VERSION_DISABLED_BADGE_TEXT = '（当前酒馆版本过低，请更
 const WORLD_INFO_DRAWER_HANDLER_KEY = '__baiBaiToolkitWorldInfoDrawerHandler';
 const WORLD_INFO_LAZY_SELECT2_PATCH_KEY = '__baiBaiToolkitWorldInfoLazySelect2Patched';
 const WORLD_INFO_CHARACTER_FILTER_APPEND_PATCH_KEY = '__baiBaiToolkitWorldInfoCharacterFilterAppendPatched';
+const CHARACTER_SEARCH_OPTIMIZATION_KEY = 'baiBaiToolkitCharacterSearchOptimization';
 const CHAT_MANAGEMENT_POPUP_SELECTOR = '#shadow_select_chat_popup';
 const CHAT_MANAGEMENT_LIST_SELECTOR = '#select_chat_div';
 const OPENAI_PRESET_SELECT_SELECTOR = '#settings_preset_openai';
@@ -254,6 +255,7 @@ const defaultSettings = {
     customCssInputOptimizationEnabled: true,
     customCssShadowPropertyEnabled: true,
     worldInfoDrawerOptimizationEnabled: true,
+    characterSearchInputOptimizationEnabled: true,
     fastChatListEnabled: true,
     welcomeRecentChatDirectOpenEnabled: true,
     saveRequestGzipEnabled: true,
@@ -1897,6 +1899,14 @@ async function renderSettingsPanel() {
             applyWorldInfoCharacterFilterOptionsOptimization();
         });
 
+    $('#bai_bai_toolkit_character_search_input_optimization_enabled')
+        .prop('checked', settings.characterSearchInputOptimizationEnabled)
+        .on('input', function () {
+            settings.characterSearchInputOptimizationEnabled = Boolean($(this).prop('checked'));
+            saveExtensionSettings();
+            applyCharacterSearchInputOptimization();
+        });
+
     $('#bai_bai_toolkit_fast_chat_list_enabled')
         .prop('checked', settings.fastChatListEnabled)
         .on('input', function () {
@@ -2199,6 +2209,7 @@ function applyFeatureSettings() {
     applyWorldInfoDrawerOptimization();
     applyWorldInfoLazySelect2Optimization();
     applyWorldInfoCharacterFilterOptionsOptimization();
+    applyCharacterSearchInputOptimization();
     applyDescriptionCodeMirrorEditorOptimization();
     applyCustomCssInputOptimization();
     applyPresetScrollOptimization();
@@ -6932,6 +6943,118 @@ function applyWorldInfoCharacterFilterOptionsOptimization() {
     Object.assign(patchedAppend, originalAppend);
     globalThis.jQuery.fn.append = patchedAppend;
     extensionState[WORLD_INFO_CHARACTER_FILTER_APPEND_PATCH_KEY] = true;
+}
+
+function applyCharacterSearchInputOptimization() {
+    const state = extensionState[CHARACTER_SEARCH_OPTIMIZATION_KEY] || {
+        installed: false,
+        isComposing: false,
+        debounceTimer: null,
+    };
+    extensionState[CHARACTER_SEARCH_OPTIMIZATION_KEY] = state;
+
+    // Retry finding the input if it's not available immediately (e.g. ST not fully initialized)
+    const originalInput = document.getElementById('character_search_bar');
+    if (!originalInput) {
+        if (!state.retryTimer) {
+            state.retryTimer = setTimeout(() => {
+                state.retryTimer = null;
+                applyCharacterSearchInputOptimization();
+            }, 1000);
+        }
+        return;
+    }
+
+    if (settings.characterSearchInputOptimizationEnabled) {
+        if (!state.installed) {
+            installCharacterSearchInputOptimization(state, originalInput);
+        }
+    } else {
+        if (state.installed) {
+            removeCharacterSearchInputOptimization(state, originalInput);
+        }
+    }
+}
+
+function installCharacterSearchInputOptimization(state, originalInput) {
+    if (state.installed) return;
+
+    state.installed = true;
+    state.isComposing = false;
+    state.isBypassingSync = false;
+
+    state.compositionStartHandler = (e) => {
+        if (e.target === originalInput) {
+            state.isComposing = true;
+        }
+    };
+
+    state.compositionEndHandler = (e) => {
+        if (e.target === originalInput) {
+            state.isComposing = false;
+            triggerCharacterSearch(state, originalInput);
+        }
+    };
+
+    state.inputCaptureHandler = (e) => {
+        if (e.target !== originalInput) return;
+
+        // If we fired this event intentionally, let it pass to ST's handler
+        if (state.isBypassingSync) return;
+
+        // If this event was not triggered by user interaction (e.g. ST clears input using val('').trigger('input'))
+        // we should let it pass immediately, so other UI logic isn't artificially delayed by 300ms.
+        if (!e.isTrusted) return;
+
+        // Otherwise intercept and stop it
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+
+        if (!state.isComposing) {
+            triggerCharacterSearch(state, originalInput);
+        }
+    };
+
+    // We must use capture: true to intercept the events before ST's jQuery listeners get them
+    originalInput.addEventListener('compositionstart', state.compositionStartHandler, true);
+    originalInput.addEventListener('compositionend', state.compositionEndHandler, true);
+    originalInput.addEventListener('input', state.inputCaptureHandler, true);
+}
+
+function triggerCharacterSearch(state, originalInput, timeout = 300) {
+    clearTimeout(state.debounceTimer);
+
+    state.debounceTimer = setTimeout(() => {
+        if (!state.installed) return;
+
+        // Fire a synthetic input event that our capture handler will let through
+        state.isBypassingSync = true;
+
+        if (window.jQuery) {
+            window.jQuery(originalInput).trigger('input');
+        } else {
+            originalInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        state.isBypassingSync = false;
+    }, timeout);
+}
+
+function removeCharacterSearchInputOptimization(state, originalInput) {
+    if (state.retryTimer) {
+        clearTimeout(state.retryTimer);
+        state.retryTimer = null;
+    }
+
+    if (!state.installed) return;
+
+    originalInput.removeEventListener('compositionstart', state.compositionStartHandler, true);
+    originalInput.removeEventListener('compositionend', state.compositionEndHandler, true);
+    originalInput.removeEventListener('input', state.inputCaptureHandler, true);
+
+    clearTimeout(state.debounceTimer);
+
+    state.installed = false;
 }
 
 function shouldDeferWorldInfoCharacterFilterAppend(targets, args) {

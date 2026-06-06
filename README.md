@@ -59,3 +59,7 @@ For local testing inside this repository, the extension can live under:
 - `public/scripts/extensions/third-party/SillyTavern-Mobile-Resize-Guard`
 
 For end-user Git installation through SillyTavern's third-party extension installer, publish the contents of this folder at the root of a separate repository so that `manifest.json` is at the repository root.
+### 角色搜索输入框优化 (Character Search Input Optimization)
+启用后，会在事件流顶层拦截原本的角色搜索输入框交互。能够完美地在输入法拼音打字期间屏蔽搜索触发，并额外加上 300 毫秒防抖。
+此优化可以大幅解决在包含海量角色时，中文拼音输入法导致的界面严重卡顿和被频发的 DOM 重绘打断的问题。
+
