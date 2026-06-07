@@ -26,7 +26,7 @@ import * as presetOptimizations from './presetOptimizations.js';
 
 const LOG_PREFIX = '[柏宝箱]';
 const MODULE_NAME = getModuleName();
-const CURRENT_VERSION = '0.22.1';
+const CURRENT_VERSION = '0.23.0';
 const EXTENSION_ID = getExtensionId();
 const SETTINGS_KEY = 'baiBaiToolkit';
 const EXTENSION_KEY = '__baiBaiToolkitExtensionInstalled';
@@ -7721,7 +7721,7 @@ function createDescriptionCodeMirrorView(state, source, wrapper, modules) {
                 minHeight: 'min(42vh, 420px)',
                 overflow: 'auto',
                 overflowAnchor: 'none',
-                overscrollBehavior: 'contain',
+                overscrollBehavior: 'auto',
                 touchAction: 'pan-y',
                 WebkitOverflowScrolling: 'touch',
             },

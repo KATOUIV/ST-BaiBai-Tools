@@ -2465,7 +2465,7 @@ function createPresetPromptCodeMirrorView(state, source, wrapper, modules) {
                 minWidth: '0',
                 overflow: 'auto',
                 overflowAnchor: 'none',
-                overscrollBehavior: 'contain',
+                overscrollBehavior: 'auto',
                 touchAction: 'pan-y',
                 WebkitOverflowScrolling: 'touch',
             },

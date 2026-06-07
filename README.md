@@ -2,7 +2,7 @@
 
 This extension packages a small set of SillyTavern responsiveness fixes as a third-party extension.
 
-Current version: `0.22.1`
+Current version: `0.23.0`
 
 What it does:
 
@@ -16,7 +16,7 @@ What it does:
 - Speeds up OpenAI preset switching by letting the mobile preset select close first, rendering the prompt list immediately, suppressing the stock one-second delayed rebuild for that switch, and refreshing token counts afterward
 - Replaces prompt preset dragging with a non-reflow drag preview that moves a floating clone, shows an insertion line, and only reorders the list when dropped
 - Speeds up prompt preset toggles and saves by updating only the affected prompt row immediately, then refreshing token counts after a short debounce instead of rebuilding the whole prompt list on every click
-- Speeds up existing regex script toggles, edits, deletes, and drag sorting by updating the affected regex row or order without rebuilding all regex lists
+- Replaces the regex script lists with a Vue-powered grouped manager that speeds up row operations, drag sorting, grouping, and bulk actions without rebuilding every regex list
 - Adds a `预设内容 CodeMirror 编辑器` switch that replaces the OpenAI prompt entry content textarea, including SillyTavern's expanded editor, while keeping the original form fields synchronized for saves
 - Optionally saves the current OpenAI preset after a prompt entry edit is saved; this switch is off by default
 - Allows either double or triple clicking on a message text bubble to quickly open the message editor for that message floor
@@ -42,7 +42,20 @@ The prompt preset drag optimization only applies to the OpenAI/chat-completion p
 
 The prompt preset quick-operation optimization only applies to existing rows in the OpenAI/chat-completion prompt manager list. New prompt creation still falls back to SillyTavern's original behavior because it changes the available prompt list. The feature switch preserves SillyTavern's original behavior when disabled.
 
-The regex quick-operation optimization only applies to existing regex rows. It intercepts single-row enable/disable, edit, and delete clicks, then updates the affected row directly. It also replaces the regex list sortable stop handler so drag sorting saves the new order without immediately rebuilding the global, preset, and scoped regex lists. Regex creation, bulk operations, imports, and preset application still use SillyTavern's original full refresh behavior.
+### 正则优化列表 (Regex Optimization List)
+
+启用 `正则快速操作` 后，正则列表会使用扩展内置的 Vue 管理器接管全局、预设和角色正则列表，主要优化包括：
+
+- 单条正则启用/禁用、编辑保存、删除时只更新受影响条目，避免立即重建全部正则列表
+- 正则条目支持拖拽排序和跨分组移动，并保存新的顺序与分组归属
+- 支持创建、重命名、删除、折叠正则分组
+- 支持对整组正则一键启用或禁用
+- 支持用上移/下移按钮调整分组排序，未分组保持默认兜底组
+- 支持批量选择、批量启用/禁用、批量移动到全局/预设/角色正则、批量删除和批量导出
+- 正则导入后会同步 Vue 列表与分组元数据，减少原版整表刷新带来的卡顿
+- 正则保存会进入待保存队列，并在正则面板关闭或页面生命周期事件中统一 flush，减少连续操作时的重复保存
+
+The regex quick-operation optimization replaces the stock regex lists with a Vue manager for global, preset, and scoped scripts. It updates affected rows directly, preserves script order and grouping metadata, supports grouped drag sorting and bulk operations, and defers pending saves so repeated operations do not immediately rebuild every regex list.
 
 The prompt preset content CodeMirror editor is enabled by default. It replaces the prompt entry content textarea and its expanded editor with a plain CodeMirror editor, flushes content back to SillyTavern before saving, supports read-only marker prompts, and falls back to the original textarea if CodeMirror cannot be loaded.
 
