@@ -37,6 +37,9 @@ const LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_STABLE_FRAMES = 6;
 const LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_TOLERANCE = 8;
 const LONG_CHAT_DOM_RENDER_UNCONTAINED_TAIL_MESSAGES = 4;
 const LONG_CHAT_DOM_RENDER_GENERATION_ANCHOR_RELEASE_MS = 1200;
+const LONG_CHAT_DOM_RENDER_LATEST_MESSAGE_TOP_OFFSET_RATIO = 0.18;
+const LONG_CHAT_DOM_RENDER_LATEST_MESSAGE_TOP_OFFSET_MIN = 24;
+const LONG_CHAT_DOM_RENDER_LATEST_MESSAGE_TOP_OFFSET_MAX = 160;
 const LONG_CHAT_DOM_RENDER_BOTTOM_ANCHOR_CLASS = 'bai-bai-toolkit-long-chat-bottom-anchor';
 const LONG_CHAT_DOM_RENDER_BOTTOM_ANCHORED_CLASS = 'bai-bai-toolkit-long-chat-bottom-anchored';
 const LONG_CHAT_DOM_RENDER_HEIGHT_VAR = '--bai-bai-toolkit-long-chat-mes-height';
@@ -341,8 +344,12 @@ function installLongChatDomRenderOptimization() {
             scheduleLongChatDomRenderRefresh({ autoScroll: false, reason: 'generation-started' });
         };
         const generationEndedHandler = () => {
+            const shouldScrollToLatestMessageStart = shouldScrollLongChatDomRenderToLatestMessageStartAfterGeneration(state);
             state.generationActive = false;
             releaseLongChatDomRenderGenerationAnchor();
+            if (shouldScrollToLatestMessageStart) {
+                scheduleLongChatDomRenderScrollToLatestMessageStart('generation-ended');
+            }
         };
 
         addLongChatDomRenderEventHandler(event_types.CHAT_CHANGED, chatLoadHandler);
@@ -822,6 +829,16 @@ function shouldStartLongChatDomRenderGenerationAnchor() {
         && isLongChatDomRenderAtBottom(chat);
 }
 
+function shouldScrollLongChatDomRenderToLatestMessageStartAfterGeneration(state = getLongChatDomRenderState()) {
+    const chat = document.querySelector('#chat');
+    return chat instanceof HTMLElement
+        && settings.longChatDomRenderOptimizationEnabled
+        && !isWelcomePageDisplayed(chat)
+        && isLongChatDomRenderOptimizedChat(chat)
+        && state.generationAnchorEnabled
+        && !state.userScrolledAway;
+}
+
 function scheduleLongChatDomRenderGenerationAnchor() {
     if (!settings.longChatDomRenderOptimizationEnabled) {
         return;
@@ -899,6 +916,20 @@ function removeLongChatDomRenderBottomAnchorIfIdle(state = getLongChatDomRenderS
     }
 
     removeLongChatDomRenderBottomAnchor(state);
+}
+
+function scheduleLongChatDomRenderScrollToLatestMessageStart(reason = '') {
+    const state = getLongChatDomRenderState();
+    clearLongChatDomRenderAutoScrollTimers();
+    state.autoScrollToken = Number(state.autoScrollToken || 0) + 1;
+    const token = state.autoScrollToken;
+    state.autoScrollStartedAt = performance.now();
+    state.autoScrollLastHeight = 0;
+    state.autoScrollLastTargetTop = null;
+    state.autoScrollStableFrames = 0;
+    state.autoScrollLogged = false;
+
+    settleLongChatDomRenderScrollToLatestMessageStart(token, reason);
 }
 
 function scheduleLongChatDomRenderScrollToBottom(reason = '') {
@@ -1042,6 +1073,68 @@ function restoreLongChatDomRenderScrollBehavior(state = getLongChatDomRenderStat
     state.autoScrollPreviousScrollBehavior = '';
 }
 
+function settleLongChatDomRenderScrollToLatestMessageStart(token, reason = '') {
+    const state = getLongChatDomRenderState();
+    const chat = document.querySelector('#chat');
+
+    if (!(chat instanceof HTMLElement)
+        || token !== state.autoScrollToken
+        || !settings.longChatDomRenderOptimizationEnabled
+        || isWelcomePageDisplayed(chat)
+        || state.userScrolledAway) {
+        restoreLongChatDomRenderScrollBehavior(state);
+        return;
+    }
+
+    const latestMessage = getLongChatDomRenderLatestMessageElement(chat);
+    if (!(latestMessage instanceof HTMLElement)) {
+        restoreLongChatDomRenderScrollBehavior(state);
+        return;
+    }
+
+    ensureLongChatDomRenderInstantScroll(chat, state);
+    removeLongChatDomRenderBottomAnchor(state);
+
+    const now = performance.now();
+    state.programmaticScrollUntil = now + 250;
+
+    const targetTop = getLongChatDomRenderLatestMessageStartScrollTop(chat, latestMessage);
+    const distance = Math.abs(chat.scrollTop - targetTop);
+    const heightDelta = Math.abs(Number(state.autoScrollLastHeight || 0) - chat.scrollHeight);
+    const targetDelta = Number.isFinite(state.autoScrollLastTargetTop)
+        ? Math.abs(Number(state.autoScrollLastTargetTop) - targetTop)
+        : 0;
+
+    if (distance > LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_TOLERANCE) {
+        chat.scrollTop = targetTop;
+        state.autoScrollStableFrames = 0;
+    } else if (heightDelta > LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_TOLERANCE || targetDelta > LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_TOLERANCE) {
+        state.autoScrollStableFrames = 0;
+    } else {
+        state.autoScrollStableFrames = Number(state.autoScrollStableFrames || 0) + 1;
+    }
+
+    state.autoScrollLastHeight = chat.scrollHeight;
+    state.autoScrollLastTargetTop = targetTop;
+
+    const elapsed = now - Number(state.autoScrollStartedAt || now);
+    if (elapsed < LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_SETTLE_MS
+        && Number(state.autoScrollStableFrames || 0) < LONG_CHAT_DOM_RENDER_SCROLL_BOTTOM_STABLE_FRAMES) {
+        state.autoScrollFrame = requestAnimationFrame(() => {
+            state.autoScrollFrame = 0;
+            settleLongChatDomRenderScrollToLatestMessageStart(token, reason);
+        });
+        return;
+    }
+
+    restoreLongChatDomRenderScrollBehavior(state);
+
+    if (!state.autoScrollLogged) {
+        state.autoScrollLogged = true;
+        console.debug(`${LOG_PREFIX} Long chat DOM render optimization scrolled to latest message start (${reason})`);
+    }
+}
+
 function handleLongChatDomRenderScroll(chat) {
     const state = getLongChatDomRenderState();
     if (performance.now() < Number(state.programmaticScrollUntil || 0)) {
@@ -1068,6 +1161,32 @@ function isLongChatDomRenderAtBottom(chat) {
     }
 
     return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 48;
+}
+
+function getLongChatDomRenderLatestMessageElement(chat) {
+    if (!(chat instanceof HTMLElement)) {
+        return null;
+    }
+
+    const messages = [...chat.querySelectorAll('.mes[mesid]')].filter(element => element instanceof HTMLElement);
+    return messages[messages.length - 1] ?? null;
+}
+
+function getLongChatDomRenderLatestMessageStartScrollTop(chat, message) {
+    const currentTop = chat.scrollTop;
+    const chatRect = chat.getBoundingClientRect();
+    const messageRect = message.getBoundingClientRect();
+    const viewportOffset = Math.max(
+        LONG_CHAT_DOM_RENDER_LATEST_MESSAGE_TOP_OFFSET_MIN,
+        Math.min(
+            Math.round(chat.clientHeight * LONG_CHAT_DOM_RENDER_LATEST_MESSAGE_TOP_OFFSET_RATIO),
+            LONG_CHAT_DOM_RENDER_LATEST_MESSAGE_TOP_OFFSET_MAX,
+        ),
+    );
+    const rawTop = currentTop + messageRect.top - chatRect.top - viewportOffset;
+    const maxTop = Math.max(0, chat.scrollHeight - chat.clientHeight);
+
+    return Math.max(0, Math.min(Math.round(rawTop), maxTop));
 }
 
 function getLongChatMessageTextLength(message) {
