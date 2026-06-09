@@ -242,7 +242,7 @@ const defaultSettings = {
     baibaokuSettingsAccelerationEnabled: true,
     fastCharacterListEnabled: true,
     recentChatListAccelerationEnabled: true,
-    progressiveChatLoadingEnabled: true,
+    progressiveChatLoadingEnabled: false,
     tokenizerBulkCountEnabled: true,
     characterListAvatarLazyLoadEnabled: true,
     fastChatListEnabled: true,
@@ -491,7 +491,7 @@ async function setBaibaokuProgressiveChatLoadingEnabled(enabled) {
 
     try {
         const saved = await saveBaibaokuFastConfig({ progressiveChatLoadingEnabled: next });
-        const savedEnabled = saved.progressiveChatLoadingEnabled !== false;
+        const savedEnabled = saved.progressiveChatLoadingEnabled === true;
         settings.progressiveChatLoadingEnabled = savedEnabled;
         applyFastChatGetOptimization();
         return saved;
@@ -2260,7 +2260,7 @@ function applyBaibaokuPanelLocalState(container) {
     container.find('#bai_bai_toolkit_recent_chat_list_acceleration_enabled')
         .prop('checked', settings.recentChatListAccelerationEnabled !== false);
     container.find('#bai_bai_toolkit_progressive_chat_loading_enabled')
-        .prop('checked', settings.progressiveChatLoadingEnabled !== false);
+        .prop('checked', settings.progressiveChatLoadingEnabled === true);
     container.find('#bai_bai_toolkit_tokenizer_bulk_count_enabled')
         .prop('checked', settings.tokenizerBulkCountEnabled !== false);
 
@@ -2379,7 +2379,7 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
             const settingsEnabled = config.settingsAccelerationEnabled !== false;
             const characterListEnabled = config.characterListAccelerationEnabled !== false;
             const recentChatListEnabled = config.recentChatListAccelerationEnabled !== false;
-            const progressiveChatLoadingEnabled = config.progressiveChatLoadingEnabled !== false;
+            const progressiveChatLoadingEnabled = config.progressiveChatLoadingEnabled === true;
             const tokenizerBulkCountEnabled = config.tokenizerBulkCountEnabled !== false;
             panelState.cache = {
                 ...(panelState.cache || {}),
