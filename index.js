@@ -26,11 +26,20 @@ import * as presetOptimizations from './presetOptimizations.js';
 
 const LOG_PREFIX = '[柏宝箱]';
 const MODULE_NAME = getModuleName();
-const CURRENT_VERSION = '0.23.0';
+const CURRENT_VERSION = '0.24.0';
 const EXTENSION_ID = getExtensionId();
 const SETTINGS_KEY = 'baiBaiToolkit';
 const EXTENSION_KEY = '__baiBaiToolkitExtensionInstalled';
+const FAST_SETTINGS_BOOTSTRAP_FETCH_KEY = '__baiBaiToolkitFastSettingsBootstrapFetchPatched';
+const FAST_CHARACTER_LIST_FETCH_KEY = '__baiBaiToolkitFastCharacterListFetchPatched';
+const BAIBAOKU_EARLY_BRIDGE_KEY = '__baibaokuEarlyBridge';
+const BAIBAOKU_STATUS_URL = '/api/plugins/baibaoku/v1/status';
+const BAIBAOKU_FAST_CONFIG_URL = '/api/plugins/baibaoku/v1/fast-config';
+const BAIBAOKU_FAST_CHAT_GET_URL = '/api/plugins/baibaoku/v1/chats/fast-get';
+const BAIBAOKU_STATUS_TIMEOUT_MS = 3000;
+const BAIBAOKU_PANEL_STATUS_CACHE_MS = 5 * 60_000;
 const SAVE_REQUEST_GZIP_FETCH_KEY = '__baiBaiToolkitSaveRequestGzipFetchPatched';
+const FAST_CHAT_GET_FETCH_KEY = '__baiBaiToolkitFastChatGetFetchPatched';
 const PERFORMANCE_TRACE_FETCH_KEY = '__baiBaiToolkitPerformanceTraceFetchPatched';
 const TRANSLATE_MESSAGE_UPDATED_OPTIMIZATION_KEY = '__baiBaiToolkitTranslateMessageUpdatedOptimized';
 const CUSTOM_CSS_INPUT_OPTIMIZATION_KEY = '__baiBaiToolkitCustomCssInputOptimized';
@@ -50,6 +59,8 @@ const REGEX_VUE_MANAGER_ROOT_ID = 'bai_bai_toolkit_regex_vue_manager_root';
 const REGEX_VUE_MANAGER_STYLE_ID = 'bai_bai_toolkit_regex_vue_manager_style';
 const REGEX_VUE_MANAGER_MODULE_PATH = './vendor/vue.esm-browser.prod.js';
 const REGEX_VUE_DRAGGABLE_MODULE_PATH = './vendor/vue-draggable-next.esm-browser.prod.js';
+const CHARACTER_LIST_AVATAR_LAZY_LOAD_KEY = '__baiBaiToolkitCharacterListAvatarLazyLoad';
+const CHARACTER_LIST_AVATAR_LAZY_LOAD_STYLE_ID = 'bai_bai_toolkit_character_list_avatar_lazy_load_style';
 const REGEX_UNGROUPED_GROUP_ID = '__ungrouped';
 const REGEX_PENDING_ASSIGNMENT_GROUP_ID = '__pending_assignment';
 const REGEX_VUE_GROUP_BODY_TRANSITION_KEY = '__baiBaiToolkitRegexVueGroupBodyTransition';
@@ -107,12 +118,62 @@ const WORLD_INFO_ENTRY_DRAWER_SELECTOR = '#world_popup_entries_list > .world_ent
 const WORLD_INFO_LAZY_SELECT2_SELECTOR = '#world_popup_entries_list .world_entry_edit select[name="characterFilter"], #world_popup_entries_list .world_entry_edit select[name="triggers"]';
 const WORLD_INFO_LAZY_SELECT2_DATASET_KEY = 'baiBaiToolkitLazySelect2';
 const WORLD_INFO_DEFERRED_OPTIONS_DATASET_KEY = 'baiBaiToolkitDeferredOptions';
+const CHARACTER_LIST_SELECTOR = '#rm_print_characters_block';
+const CHARACTER_LIST_AVATAR_SELECTOR = `${CHARACTER_LIST_SELECTOR} .character_select .avatar img`;
+const PERSONA_LIST_SELECTOR = '#user_avatar_block';
+const PERSONA_LIST_AVATAR_SELECTOR = `${PERSONA_LIST_SELECTOR} .avatar-container .avatar img`;
+const WELCOME_RECENT_CHAT_SELECTOR = '.welcomePanel .recentChat';
+const WELCOME_RECENT_CHAT_AVATAR_SELECTOR = `${WELCOME_RECENT_CHAT_SELECTOR} .avatar img`;
+const AVATAR_LAZY_LOAD_APPEND_TARGET_SELECTOR = `${CHARACTER_LIST_SELECTOR}, ${PERSONA_LIST_SELECTOR}`;
+const AVATAR_LAZY_LOAD_NATIVE_APPEND_TARGET_SELECTOR = '#chat';
+const AVATAR_LAZY_LOAD_SELECTOR = [
+    CHARACTER_LIST_AVATAR_SELECTOR,
+    PERSONA_LIST_AVATAR_SELECTOR,
+    WELCOME_RECENT_CHAT_AVATAR_SELECTOR,
+].join(', ');
+const AVATAR_LAZY_LOAD_RELATIVE_SELECTOR = [
+    '.character_select .avatar img',
+    '.avatar-container .avatar img',
+    `${WELCOME_RECENT_CHAT_SELECTOR} .avatar img`,
+].join(', ');
+const CHARACTER_LIST_LAZY_AVATAR_SRC_DATASET_KEY = 'baiBaiToolkitLazyAvatarSrc';
+const CHARACTER_LIST_LAZY_AVATAR_PLACEHOLDER_SRC = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+const CHARACTER_LIST_LAZY_AVATAR_PENDING_CLASS = 'bai-bai-toolkit-lazy-avatar-pending';
+const CHARACTER_LIST_LAZY_AVATAR_LOADED_CLASS = 'bai-bai-toolkit-lazy-avatar-loaded';
+const CHARACTER_LIST_LAZY_AVATAR_SHELL_CLASS = 'bai-bai-toolkit-lazy-avatar-shell';
+const CHARACTER_LIST_LAZY_AVATAR_ROOT_MARGIN = '800px 0px 1200px 0px';
 const SILENT_UPDATE_STORAGE_KEY = 'bai_bai_toolkit_silent_update';
 const SILENT_UPDATE_INTERVAL_MS = 60 * 60 * 1000;
 const SAVE_REQUEST_GZIP_PATHS = new Set([
     '/api/chats/save',
     '/api/chats/group/save',
 ]);
+const FAST_CHAT_GET_PATHS = new Set([
+    '/api/chats/get',
+    '/api/chats/group/get',
+]);
+const FAST_CHAT_GET_SAVE_PATHS = new Set([
+    '/api/chats/save',
+    '/api/chats/group/save',
+]);
+const FAST_CHAT_GET_DEFAULT_THRESHOLD_BYTES = 2 * 1024 * 1024;
+const FAST_CHAT_GET_DEFAULT_INITIAL_MESSAGES = 5;
+const FAST_CHAT_GET_ACTION_SELECTOR = [
+    '#send_but',
+    '#option_regenerate',
+    '#option_continue',
+    '#option_impersonate',
+    '#mes_continue',
+    '#mes_impersonate',
+    '#chat .mes_edit',
+    '#chat .mes_edit_done',
+    '#chat .mes_delete',
+    '#chat .del_mes',
+    '#chat .swipe_left',
+    '#chat .swipe_right',
+    '#show_more_messages',
+].join(', ');
+const FAST_SETTINGS_BOOTSTRAP_CACHE_MS = 15_000;
 const PERFORMANCE_TRACE_FETCH_PATHS = new Set([
     '/api/chats/get',
     '/api/chats/group/get',
@@ -175,6 +236,12 @@ const defaultSettings = {
     customCssShadowPropertyEnabled: true,
     worldInfoDrawerOptimizationEnabled: true,
     characterSearchInputOptimizationEnabled: true,
+    baibaokuSettingsAccelerationEnabled: true,
+    fastCharacterListEnabled: true,
+    recentChatListAccelerationEnabled: true,
+    progressiveChatLoadingEnabled: true,
+    tokenizerBulkCountEnabled: true,
+    characterListAvatarLazyLoadEnabled: true,
     fastChatListEnabled: true,
     welcomeRecentChatDirectOpenEnabled: true,
     saveRequestGzipEnabled: true,
@@ -204,6 +271,8 @@ const legacySettingsKeys = [
     'descriptionInputIdleSaveEnabled',
     'imeCommitOptimizationEnabled',
     'mobileChatEntryKeyboardSuppressionEnabled',
+    'fastSettingsBootstrapEnabled',
+    'fastCharacterListEnabled',
 ];
 const settings = { ...defaultSettings };
 const extensionState = getExtensionState();
@@ -231,6 +300,8 @@ if (!extensionState.installed) {
     console.debug(`${LOG_PREFIX} Installed`);
 }
 
+disableFastSettingsBootstrapFetchHook();
+disableFastCharacterListFetchHook();
 installSaveRequestGzipFetchHook();
 installPerformanceTraceFetchHook();
 chatOptimizations.observeChatManagementPopupCleanup();
@@ -271,6 +342,13 @@ function initializeSettings() {
 
     let removedLegacySetting = false;
 
+    if (
+        typeof extension_settings[SETTINGS_KEY].baibaokuSettingsAccelerationEnabled !== 'boolean'
+        && typeof extension_settings[SETTINGS_KEY].fastSettingsBootstrapEnabled === 'boolean'
+    ) {
+        extension_settings[SETTINGS_KEY].baibaokuSettingsAccelerationEnabled = extension_settings[SETTINGS_KEY].fastSettingsBootstrapEnabled;
+    }
+
     for (const key of legacySettingsKeys) {
         if (Object.prototype.hasOwnProperty.call(extension_settings[SETTINGS_KEY], key)) {
             delete extension_settings[SETTINGS_KEY][key];
@@ -292,6 +370,162 @@ function initializeSettings() {
     }
 }
 
+function getBaibaokuEarlyBridge() {
+    const bridge = globalThis[BAIBAOKU_EARLY_BRIDGE_KEY];
+    return bridge && typeof bridge === 'object' ? bridge : null;
+}
+
+async function setBaibaokuSettingsAccelerationEnabled(enabled) {
+    const next = Boolean(enabled);
+    const previous = settings.baibaokuSettingsAccelerationEnabled !== false;
+    settings.baibaokuSettingsAccelerationEnabled = next;
+
+    const bridge = getBaibaokuEarlyBridge();
+    if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+        bridge.setSettingsAccelerationEnabled(next);
+    } else if (bridge) {
+        bridge.settingsAccelerationEnabled = next;
+    }
+
+    try {
+        const saved = await saveBaibaokuFastConfig({ settingsAccelerationEnabled: next });
+        const savedEnabled = saved.settingsAccelerationEnabled !== false;
+        settings.baibaokuSettingsAccelerationEnabled = savedEnabled;
+        if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+            bridge.setSettingsAccelerationEnabled(savedEnabled);
+        } else if (bridge) {
+            bridge.settingsAccelerationEnabled = savedEnabled;
+        }
+        return saved;
+    } catch (error) {
+        settings.baibaokuSettingsAccelerationEnabled = previous;
+        if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+            bridge.setSettingsAccelerationEnabled(previous);
+        } else if (bridge) {
+            bridge.settingsAccelerationEnabled = previous;
+        }
+        throw error;
+    }
+}
+
+async function setBaibaokuCharacterListAccelerationEnabled(enabled) {
+    const next = Boolean(enabled);
+    const previous = settings.fastCharacterListEnabled !== false;
+    settings.fastCharacterListEnabled = next;
+
+    const bridge = getBaibaokuEarlyBridge();
+    if (typeof bridge?.setCharacterListAccelerationEnabled === 'function') {
+        bridge.setCharacterListAccelerationEnabled(next);
+    } else if (bridge) {
+        bridge.characterListAccelerationEnabled = next;
+    }
+
+    try {
+        const saved = await saveBaibaokuFastConfig({ characterListAccelerationEnabled: next });
+        const savedEnabled = saved.characterListAccelerationEnabled !== false;
+        settings.fastCharacterListEnabled = savedEnabled;
+        if (typeof bridge?.setCharacterListAccelerationEnabled === 'function') {
+            bridge.setCharacterListAccelerationEnabled(savedEnabled);
+        } else if (bridge) {
+            bridge.characterListAccelerationEnabled = savedEnabled;
+        }
+        return saved;
+    } catch (error) {
+        settings.fastCharacterListEnabled = previous;
+        if (typeof bridge?.setCharacterListAccelerationEnabled === 'function') {
+            bridge.setCharacterListAccelerationEnabled(previous);
+        } else if (bridge) {
+            bridge.characterListAccelerationEnabled = previous;
+        }
+        throw error;
+    }
+}
+
+async function setBaibaokuRecentChatListAccelerationEnabled(enabled) {
+    const next = Boolean(enabled);
+    const previous = settings.recentChatListAccelerationEnabled !== false;
+    settings.recentChatListAccelerationEnabled = next;
+
+    const bridge = getBaibaokuEarlyBridge();
+    if (typeof bridge?.setRecentChatListAccelerationEnabled === 'function') {
+        bridge.setRecentChatListAccelerationEnabled(next);
+    } else if (bridge) {
+        bridge.recentChatListAccelerationEnabled = next;
+    }
+
+    try {
+        const saved = await saveBaibaokuFastConfig({ recentChatListAccelerationEnabled: next });
+        const savedEnabled = saved.recentChatListAccelerationEnabled !== false;
+        settings.recentChatListAccelerationEnabled = savedEnabled;
+        if (typeof bridge?.setRecentChatListAccelerationEnabled === 'function') {
+            bridge.setRecentChatListAccelerationEnabled(savedEnabled);
+        } else if (bridge) {
+            bridge.recentChatListAccelerationEnabled = savedEnabled;
+        }
+        return saved;
+    } catch (error) {
+        settings.recentChatListAccelerationEnabled = previous;
+        if (typeof bridge?.setRecentChatListAccelerationEnabled === 'function') {
+            bridge.setRecentChatListAccelerationEnabled(previous);
+        } else if (bridge) {
+            bridge.recentChatListAccelerationEnabled = previous;
+        }
+        throw error;
+    }
+}
+
+async function setBaibaokuProgressiveChatLoadingEnabled(enabled) {
+    const next = Boolean(enabled);
+    const previous = settings.progressiveChatLoadingEnabled === true;
+    settings.progressiveChatLoadingEnabled = next;
+    applyFastChatGetOptimization();
+
+    try {
+        const saved = await saveBaibaokuFastConfig({ progressiveChatLoadingEnabled: next });
+        const savedEnabled = saved.progressiveChatLoadingEnabled !== false;
+        settings.progressiveChatLoadingEnabled = savedEnabled;
+        applyFastChatGetOptimization();
+        return saved;
+    } catch (error) {
+        settings.progressiveChatLoadingEnabled = previous;
+        applyFastChatGetOptimization();
+        throw error;
+    }
+}
+
+async function setBaibaokuTokenizerBulkCountEnabled(enabled) {
+    const next = Boolean(enabled);
+    const previous = settings.tokenizerBulkCountEnabled !== false;
+    settings.tokenizerBulkCountEnabled = next;
+
+    const bridge = getBaibaokuEarlyBridge();
+    if (typeof bridge?.setTokenizerBulkCountEnabled === 'function') {
+        bridge.setTokenizerBulkCountEnabled(next);
+    } else if (bridge) {
+        bridge.tokenizerBulkCountEnabled = next;
+    }
+
+    try {
+        const saved = await saveBaibaokuFastConfig({ tokenizerBulkCountEnabled: next });
+        const savedEnabled = saved.tokenizerBulkCountEnabled !== false;
+        settings.tokenizerBulkCountEnabled = savedEnabled;
+        if (typeof bridge?.setTokenizerBulkCountEnabled === 'function') {
+            bridge.setTokenizerBulkCountEnabled(savedEnabled);
+        } else if (bridge) {
+            bridge.tokenizerBulkCountEnabled = savedEnabled;
+        }
+        return saved;
+    } catch (error) {
+        settings.tokenizerBulkCountEnabled = previous;
+        if (typeof bridge?.setTokenizerBulkCountEnabled === 'function') {
+            bridge.setTokenizerBulkCountEnabled(previous);
+        } else if (bridge) {
+            bridge.tokenizerBulkCountEnabled = previous;
+        }
+        throw error;
+    }
+}
+
 function normalizeMessageEditClickSettings() {
     if (settings.messageDoubleClickEditEnabled && settings.messageTripleClickEditEnabled) {
         settings.messageDoubleClickEditEnabled = false;
@@ -303,7 +537,16 @@ function normalizeMessageEditClickSettings() {
 }
 
 function saveExtensionSettings() {
-    Object.assign(extension_settings[SETTINGS_KEY], settings);
+    const persistedSettings = { ...settings };
+    delete persistedSettings.baibaokuSettingsAccelerationEnabled;
+    delete persistedSettings.fastCharacterListEnabled;
+    delete persistedSettings.recentChatListAccelerationEnabled;
+    delete persistedSettings.progressiveChatLoadingEnabled;
+    Object.assign(extension_settings[SETTINGS_KEY], persistedSettings);
+    delete extension_settings[SETTINGS_KEY].baibaokuSettingsAccelerationEnabled;
+    delete extension_settings[SETTINGS_KEY].fastCharacterListEnabled;
+    delete extension_settings[SETTINGS_KEY].recentChatListAccelerationEnabled;
+    delete extension_settings[SETTINGS_KEY].progressiveChatLoadingEnabled;
     saveSettingsDebounced();
 }
 
@@ -1755,6 +1998,7 @@ async function renderSettingsPanel() {
     });
 
     initializeUpdateUI(container);
+    initializeBaibaokuPanel(container);
 
     $('#bai_bai_toolkit_update_prompt_on_available_enabled')
         .prop('checked', settings.updatePromptOnAvailableEnabled)
@@ -1834,6 +2078,94 @@ async function renderSettingsPanel() {
             applyCharacterSearchInputOptimization();
         });
 
+    $('#bai_bai_toolkit_baibaoku_settings_acceleration_enabled')
+        .prop('checked', settings.baibaokuSettingsAccelerationEnabled)
+        .on('input', async function () {
+            const checkbox = $(this);
+            checkbox.prop('disabled', true);
+            try {
+                await setBaibaokuSettingsAccelerationEnabled(Boolean(checkbox.prop('checked')));
+            } catch (error) {
+                console.debug(`${LOG_PREFIX} Failed to save BaiBaoKu settings acceleration config`, error);
+                checkbox.prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false);
+            } finally {
+                checkbox.prop('disabled', false);
+                applyBaibaokuPanelLocalState(container);
+            }
+        });
+
+    $('#bai_bai_toolkit_fast_character_list_enabled')
+        .prop('checked', settings.fastCharacterListEnabled)
+        .on('input', async function () {
+            const checkbox = $(this);
+            checkbox.prop('disabled', true);
+            try {
+                await setBaibaokuCharacterListAccelerationEnabled(Boolean(checkbox.prop('checked')));
+            } catch (error) {
+                console.debug(`${LOG_PREFIX} Failed to save BaiBaoKu character list acceleration config`, error);
+                checkbox.prop('checked', settings.fastCharacterListEnabled !== false);
+            } finally {
+                checkbox.prop('disabled', false);
+                applyBaibaokuPanelLocalState(container);
+            }
+        });
+
+    $('#bai_bai_toolkit_recent_chat_list_acceleration_enabled')
+        .prop('checked', settings.recentChatListAccelerationEnabled)
+        .on('input', async function () {
+            const checkbox = $(this);
+            checkbox.prop('disabled', true);
+            try {
+                await setBaibaokuRecentChatListAccelerationEnabled(Boolean(checkbox.prop('checked')));
+            } catch (error) {
+                console.debug(`${LOG_PREFIX} Failed to save BaiBaoKu recent chat list acceleration config`, error);
+                checkbox.prop('checked', settings.recentChatListAccelerationEnabled !== false);
+            } finally {
+                checkbox.prop('disabled', false);
+                applyBaibaokuPanelLocalState(container);
+            }
+        });
+
+    $('#bai_bai_toolkit_progressive_chat_loading_enabled')
+        .prop('checked', settings.progressiveChatLoadingEnabled)
+        .on('input', async function () {
+            const checkbox = $(this);
+            checkbox.prop('disabled', true);
+            try {
+                await setBaibaokuProgressiveChatLoadingEnabled(Boolean(checkbox.prop('checked')));
+            } catch (error) {
+                console.debug(`${LOG_PREFIX} Failed to save BaiBaoKu progressive chat loading config`, error);
+                checkbox.prop('checked', settings.progressiveChatLoadingEnabled === true);
+            } finally {
+                checkbox.prop('disabled', false);
+                applyBaibaokuPanelLocalState(container);
+            }
+        });
+
+    $('#bai_bai_toolkit_tokenizer_bulk_count_enabled')
+        .prop('checked', settings.tokenizerBulkCountEnabled)
+        .on('input', async function () {
+            const checkbox = $(this);
+            checkbox.prop('disabled', true);
+            try {
+                await setBaibaokuTokenizerBulkCountEnabled(Boolean(checkbox.prop('checked')));
+            } catch (error) {
+                console.debug(`${LOG_PREFIX} Failed to save BaiBaoKu tokenizer bulk count config`, error);
+                checkbox.prop('checked', settings.tokenizerBulkCountEnabled !== false);
+            } finally {
+                checkbox.prop('disabled', false);
+                applyBaibaokuPanelLocalState(container);
+            }
+        });
+
+    $('#bai_bai_toolkit_character_list_avatar_lazy_load_enabled')
+        .prop('checked', settings.characterListAvatarLazyLoadEnabled)
+        .on('input', function () {
+            settings.characterListAvatarLazyLoadEnabled = Boolean($(this).prop('checked'));
+            saveExtensionSettings();
+            applyCharacterListAvatarLazyLoadOptimization();
+        });
+
     chatOptimizations.bindChatOptimizationSettings({ saveSettings: saveExtensionSettings });
 
     $('#bai_bai_toolkit_save_request_gzip_enabled')
@@ -1880,6 +2212,284 @@ async function renderSettingsPanel() {
         });
 
     chatOptimizations.applyChatOptimizationCompatibilityIndicators(container);
+}
+
+function initializeBaibaokuPanel(container) {
+    container.find('#bai_bai_toolkit_baibaoku_refresh_status')
+        .off('click.baiBaiToolkitBaibaokuStatus')
+        .on('click.baiBaiToolkitBaibaokuStatus', () => {
+            refreshBaibaokuPanelStatus(container, { force: true });
+        });
+
+    refreshBaibaokuPanelStatus(container);
+}
+
+function getBaibaokuPanelState() {
+    if (!extensionState.baibaokuPanel || typeof extensionState.baibaokuPanel !== 'object') {
+        extensionState.baibaokuPanel = {
+            cache: null,
+            pending: null,
+        };
+    }
+
+    return extensionState.baibaokuPanel;
+}
+
+function applyBaibaokuPanelLocalState(container) {
+    const bridge = getBaibaokuEarlyBridge();
+    const bridgeStatus = container.find('#bai_bai_toolkit_baibaoku_bridge_status');
+
+    const bridgeLabel = bridge?.installed
+        ? `已注入${bridge.version ? ` v${bridge.version}` : ''}`
+        : '未注入';
+    updateBaibaokuStatusText(bridgeStatus, bridgeLabel, Boolean(bridge?.installed));
+
+    container.find('#bai_bai_toolkit_baibaoku_settings_acceleration_enabled')
+        .prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false);
+    container.find('#bai_bai_toolkit_fast_character_list_enabled')
+        .prop('checked', settings.fastCharacterListEnabled !== false);
+    container.find('#bai_bai_toolkit_recent_chat_list_acceleration_enabled')
+        .prop('checked', settings.recentChatListAccelerationEnabled !== false);
+    container.find('#bai_bai_toolkit_progressive_chat_loading_enabled')
+        .prop('checked', settings.progressiveChatLoadingEnabled !== false);
+    container.find('#bai_bai_toolkit_tokenizer_bulk_count_enabled')
+        .prop('checked', settings.tokenizerBulkCountEnabled !== false);
+
+    applyCachedBaibaokuPanelStatus(container, getBaibaokuPanelState().cache);
+}
+
+function applyCachedBaibaokuPanelStatus(container, cache) {
+    if (!cache) {
+        return false;
+    }
+
+    const serverStatus = container.find('#bai_bai_toolkit_baibaoku_server_status');
+    const driverStatus = container.find('#bai_bai_toolkit_baibaoku_driver_status');
+    const status = cache.status;
+    const driver = status?.driver;
+
+    if (status) {
+        updateBaibaokuStatusText(serverStatus, `已连接${status?.version ? ` v${status.version}` : ''}`, true);
+        updateBaibaokuStatusText(driverStatus, driver?.available
+            ? `可用${driver.package ? ` (${driver.package})` : ''}`
+            : '不可用', Boolean(driver?.available));
+        return true;
+    }
+
+    if (cache.offline) {
+        updateBaibaokuStatusText(serverStatus, '未连接', false);
+        updateBaibaokuStatusText(driverStatus, '未知', false);
+        return true;
+    }
+
+    return false;
+}
+
+async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
+    const panelState = getBaibaokuPanelState();
+    const cache = panelState.cache;
+    const cacheFresh = cache && Date.now() - Number(cache.updatedAt || 0) < BAIBAOKU_PANEL_STATUS_CACHE_MS;
+    let refreshed = false;
+    applyBaibaokuPanelLocalState(container);
+    if (!force && cacheFresh && applyCachedBaibaokuPanelStatus(container, cache)) {
+        return;
+    }
+
+    if (!force && panelState.pending) {
+        await panelState.pending.catch(() => null);
+        applyCachedBaibaokuPanelStatus(container, panelState.cache);
+        return;
+    }
+
+    const serverStatus = container.find('#bai_bai_toolkit_baibaoku_server_status');
+    const driverStatus = container.find('#bai_bai_toolkit_baibaoku_driver_status');
+    const bridgeStatus = container.find('#bai_bai_toolkit_baibaoku_bridge_status');
+    const accelerationToggle = container.find('#bai_bai_toolkit_baibaoku_settings_acceleration_enabled');
+    const characterListToggle = container.find('#bai_bai_toolkit_fast_character_list_enabled');
+    const recentChatListToggle = container.find('#bai_bai_toolkit_recent_chat_list_acceleration_enabled');
+    const progressiveChatLoadingToggle = container.find('#bai_bai_toolkit_progressive_chat_loading_enabled');
+    const tokenizerBulkCountToggle = container.find('#bai_bai_toolkit_tokenizer_bulk_count_enabled');
+    const bridge = getBaibaokuEarlyBridge();
+
+    updateBaibaokuStatusText(bridgeStatus, bridge?.installed
+        ? `已注入${bridge.version ? ` v${bridge.version}` : ''}`
+        : '未注入', Boolean(bridge?.installed));
+
+    const bridgeEnabled = typeof bridge?.isSettingsAccelerationEnabled === 'function'
+        ? bridge.isSettingsAccelerationEnabled()
+        : null;
+    if (typeof bridgeEnabled === 'boolean') {
+        settings.baibaokuSettingsAccelerationEnabled = bridgeEnabled;
+        accelerationToggle.prop('checked', bridgeEnabled);
+    }
+
+    const bridgeCharacterListEnabled = typeof bridge?.isCharacterListAccelerationEnabled === 'function'
+        ? bridge.isCharacterListAccelerationEnabled()
+        : null;
+    if (typeof bridgeCharacterListEnabled === 'boolean') {
+        settings.fastCharacterListEnabled = bridgeCharacterListEnabled;
+        characterListToggle.prop('checked', bridgeCharacterListEnabled);
+    }
+
+    const bridgeRecentChatListEnabled = typeof bridge?.isRecentChatListAccelerationEnabled === 'function'
+        ? bridge.isRecentChatListAccelerationEnabled()
+        : null;
+    if (typeof bridgeRecentChatListEnabled === 'boolean') {
+        settings.recentChatListAccelerationEnabled = bridgeRecentChatListEnabled;
+        recentChatListToggle.prop('checked', bridgeRecentChatListEnabled);
+    }
+
+    const bridgeTokenizerBulkCountEnabled = typeof bridge?.isTokenizerBulkCountEnabled === 'function'
+        ? bridge.isTokenizerBulkCountEnabled()
+        : null;
+    if (typeof bridgeTokenizerBulkCountEnabled === 'boolean') {
+        settings.tokenizerBulkCountEnabled = bridgeTokenizerBulkCountEnabled;
+        tokenizerBulkCountToggle.prop('checked', bridgeTokenizerBulkCountEnabled);
+    }
+
+    updateBaibaokuStatusText(serverStatus, '检测中', null);
+    updateBaibaokuStatusText(driverStatus, '检测中', null);
+
+    try {
+        const status = await fetchBaibaokuStatus();
+        const driver = status?.driver;
+        panelState.cache = {
+            ...(panelState.cache || {}),
+            status,
+            offline: false,
+            updatedAt: Date.now(),
+        };
+        refreshed = true;
+        updateBaibaokuStatusText(serverStatus, `已连接${status?.version ? ` v${status.version}` : ''}`, true);
+        updateBaibaokuStatusText(driverStatus, driver?.available
+            ? `可用${driver.package ? ` (${driver.package})` : ''}`
+            : '不可用', Boolean(driver?.available));
+
+        try {
+            const config = await fetchBaibaokuFastConfig();
+            const settingsEnabled = config.settingsAccelerationEnabled !== false;
+            const characterListEnabled = config.characterListAccelerationEnabled !== false;
+            const recentChatListEnabled = config.recentChatListAccelerationEnabled !== false;
+            const progressiveChatLoadingEnabled = config.progressiveChatLoadingEnabled !== false;
+            const tokenizerBulkCountEnabled = config.tokenizerBulkCountEnabled !== false;
+            panelState.cache = {
+                ...(panelState.cache || {}),
+                config,
+                offline: false,
+                updatedAt: Date.now(),
+            };
+            settings.baibaokuSettingsAccelerationEnabled = settingsEnabled;
+            settings.fastCharacterListEnabled = characterListEnabled;
+            settings.recentChatListAccelerationEnabled = recentChatListEnabled;
+            settings.progressiveChatLoadingEnabled = progressiveChatLoadingEnabled;
+            settings.tokenizerBulkCountEnabled = tokenizerBulkCountEnabled;
+            accelerationToggle.prop('checked', settingsEnabled);
+            characterListToggle.prop('checked', characterListEnabled);
+            recentChatListToggle.prop('checked', recentChatListEnabled);
+            progressiveChatLoadingToggle.prop('checked', progressiveChatLoadingEnabled);
+            tokenizerBulkCountToggle.prop('checked', tokenizerBulkCountEnabled);
+            applyFastChatGetOptimization();
+            if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+                bridge.setSettingsAccelerationEnabled(settingsEnabled);
+            } else if (bridge) {
+                bridge.settingsAccelerationEnabled = settingsEnabled;
+            }
+            if (typeof bridge?.setCharacterListAccelerationEnabled === 'function') {
+                bridge.setCharacterListAccelerationEnabled(characterListEnabled);
+            } else if (bridge) {
+                bridge.characterListAccelerationEnabled = characterListEnabled;
+            }
+            if (typeof bridge?.setRecentChatListAccelerationEnabled === 'function') {
+                bridge.setRecentChatListAccelerationEnabled(recentChatListEnabled);
+            } else if (bridge) {
+                bridge.recentChatListAccelerationEnabled = recentChatListEnabled;
+            }
+            if (typeof bridge?.setTokenizerBulkCountEnabled === 'function') {
+                bridge.setTokenizerBulkCountEnabled(tokenizerBulkCountEnabled);
+            } else if (bridge) {
+                bridge.tokenizerBulkCountEnabled = tokenizerBulkCountEnabled;
+            }
+        } catch (error) {
+            console.debug(`${LOG_PREFIX} Failed to read BaiBaoKu fast config`, error);
+        }
+    } catch {
+        updateBaibaokuStatusText(serverStatus, '未连接', false);
+        updateBaibaokuStatusText(driverStatus, '未知', false);
+    }
+    if (!refreshed) {
+        panelState.cache = {
+            ...(panelState.cache || {}),
+            status: null,
+            offline: true,
+            updatedAt: Date.now(),
+        };
+    }
+}
+
+async function fetchBaibaokuStatus() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), BAIBAOKU_STATUS_TIMEOUT_MS);
+
+    try {
+        const response = await fetch(BAIBAOKU_STATUS_URL, {
+            method: 'GET',
+            cache: 'no-store',
+            signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => null);
+
+        if (!response.ok || payload?.ok !== true) {
+            throw new Error(payload?.error?.message || `HTTP ${response.status}`);
+        }
+
+        return payload.data;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function fetchBaibaokuFastConfig() {
+    const response = await fetch(BAIBAOKU_FAST_CONFIG_URL, {
+        method: 'GET',
+        cache: 'no-store',
+    });
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok || payload?.ok !== true) {
+        throw new Error(payload?.message || payload?.error?.message || `HTTP ${response.status}`);
+    }
+
+    return payload.data || {};
+}
+
+async function saveBaibaokuFastConfig(config) {
+    const headers = new Headers(getRequestHeaders());
+    if (!headers.has('content-type')) {
+        headers.set('content-type', 'application/json');
+    }
+
+    const response = await fetch(BAIBAOKU_FAST_CONFIG_URL, {
+        method: 'POST',
+        headers,
+        cache: 'no-store',
+        body: JSON.stringify(config || {}),
+    });
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok || payload?.ok !== true) {
+        throw new Error(payload?.message || payload?.error?.message || `HTTP ${response.status}`);
+    }
+
+    return payload.data || {};
+}
+
+function updateBaibaokuStatusText(element, text, ok) {
+    element.text(text);
+    element.css('color', ok === null
+        ? ''
+        : ok
+            ? 'var(--SmartThemeQuoteColor)'
+            : 'var(--SmartThemeEmColor)');
 }
 
 async function initializeUpdateUI(container) {
@@ -1953,6 +2563,8 @@ function applyFeatureSettings() {
     applyWorldInfoLazySelect2Optimization();
     applyWorldInfoCharacterFilterOptionsOptimization();
     applyCharacterSearchInputOptimization();
+    applyCharacterListAvatarLazyLoadOptimization();
+    applyFastChatGetOptimization();
     applyDescriptionCodeMirrorEditorOptimization();
     applyCustomCssInputOptimization();
     presetOptimizations.applyPresetScrollOptimization();
@@ -2695,6 +3307,7 @@ function createCustomCssCodeMirrorView(state, source, wrapper, modules) {
                 minWidth: '0',
                 overflow: 'hidden',
                 textShadow: 'none',
+                textAlign: 'left',
                 width: '100%',
             },
             '&.cm-focused': {
@@ -2719,10 +3332,12 @@ function createCustomCssCodeMirrorView(state, source, wrapper, modules) {
                 minWidth: '0',
                 padding: '8px',
                 textShadow: 'none',
+                textAlign: 'left',
                 minHeight: '180px',
             },
             '.cm-line': {
                 padding: '0',
+                textAlign: 'left',
             },
         }, { dark: colorScheme === 'dark' }),
     ];
@@ -3073,6 +3688,14 @@ function applyCustomCssCodeMirrorEditorStyle() {
     height: 100%;
     max-height: none !important;
     min-height: 0 !important;
+}
+
+#${CUSTOM_CSS_CODEMIRROR_EDITOR_ID},
+#${CUSTOM_CSS_CODEMIRROR_EDITOR_ID} .cm-editor,
+#${CUSTOM_CSS_CODEMIRROR_EDITOR_ID} .cm-scroller,
+#${CUSTOM_CSS_CODEMIRROR_EDITOR_ID} .cm-content,
+#${CUSTOM_CSS_CODEMIRROR_EDITOR_ID} .cm-line {
+    text-align: left !important;
 }
 
 #CustomCSS-textAreaBlock.${CUSTOM_CSS_HOST_CLASS},
@@ -4007,7 +4630,6 @@ function renderRegexVueTeleport(h, vueDraggableNext, Teleport, Transition, model
 
 function renderRegexVueList(h, vueDraggableNext, Transition, model, typeKey) {
     const list = model.lists[typeKey];
-    const hasRealGroups = list.groups.some(group => !group.isUngrouped && !group.isPendingAssignment);
     const scriptCount = list.groups.reduce((count, group) => count + group.scripts.length, 0);
     const children = [
         renderRegexVueListToolbar(h, model, list),
@@ -4018,7 +4640,7 @@ function renderRegexVueList(h, vueDraggableNext, Transition, model, typeKey) {
     }
 
     const groupChildren = list.groups.map(group => {
-        const showGroupHeader = !group.isPendingAssignment && (!group.isUngrouped || hasRealGroups);
+        const showGroupHeader = !group.isPendingAssignment;
         const groupChildren = [];
 
         if (showGroupHeader) {
@@ -7434,6 +8056,466 @@ function removeCharacterSearchInputOptimization(state, originalInput) {
     state.installed = false;
 }
 
+function getCharacterListAvatarLazyLoadState() {
+    if (!extensionState[CHARACTER_LIST_AVATAR_LAZY_LOAD_KEY] || typeof extensionState[CHARACTER_LIST_AVATAR_LAZY_LOAD_KEY] !== 'object') {
+        extensionState[CHARACTER_LIST_AVATAR_LAZY_LOAD_KEY] = {};
+    }
+
+    return extensionState[CHARACTER_LIST_AVATAR_LAZY_LOAD_KEY];
+}
+
+function applyCharacterListAvatarLazyLoadOptimization() {
+    if (settings.characterListAvatarLazyLoadEnabled) {
+        installCharacterListAvatarLazyLoadOptimization();
+    } else {
+        restoreCharacterListAvatarLazyLoadOptimization();
+    }
+}
+
+function installCharacterListAvatarLazyLoadOptimization() {
+    const state = getCharacterListAvatarLazyLoadState();
+    state.enabled = true;
+
+    installCharacterListAvatarLazyLoadStyle();
+
+    if (typeof IntersectionObserver !== 'function') {
+        applyNativeCharacterListImageHints();
+        console.warn(`${LOG_PREFIX} IntersectionObserver is unavailable; character list avatar lazy loading fell back to native image hints`);
+        return;
+    }
+
+    installCharacterListAvatarIntersectionObserver(state);
+    installCharacterListAvatarAppendPatch(state);
+    installCharacterListAvatarNativeAppendPatch(state);
+    installCharacterListAvatarMutationObserver(state);
+    installCharacterListAvatarPageLoadedHandler(state);
+    scheduleProcessCharacterListAvatars(state);
+}
+
+function restoreCharacterListAvatarLazyLoadOptimization() {
+    const state = getCharacterListAvatarLazyLoadState();
+    state.enabled = false;
+
+    if (state.processTimer) {
+        clearTimeout(state.processTimer);
+        state.processTimer = null;
+    }
+
+    state.mutationObserver?.disconnect();
+    state.mutationObserver = null;
+    state.intersectionObserver?.disconnect();
+    state.intersectionObserver = null;
+
+    if (state.characterPageLoadedHandler) {
+        eventSource.removeListener?.(event_types.CHARACTER_PAGE_LOADED, state.characterPageLoadedHandler);
+        state.characterPageLoadedHandler = null;
+    }
+
+    restoreCharacterListAvatarAppendPatch(state);
+    restoreCharacterListAvatarNativeAppendPatch(state);
+    restorePendingCharacterListAvatars();
+    removeCharacterListAvatarLazyLoadStyle();
+}
+
+function installCharacterListAvatarAppendPatch(state) {
+    const originalAppend = globalThis.jQuery?.fn?.append;
+
+    if (typeof originalAppend !== 'function' || state.patchedAppend === originalAppend) {
+        return;
+    }
+
+    if (state.patchedAppend && globalThis.jQuery.fn.append === state.patchedAppend) {
+        return;
+    }
+
+    function patchedAppend(...args) {
+        if (settings.characterListAvatarLazyLoadEnabled && shouldPrepareCharacterListAppend(this)) {
+            prepareCharacterListAvatarAppendArguments(args, state);
+        }
+
+        const result = originalAppend.apply(this, args);
+
+        if (settings.characterListAvatarLazyLoadEnabled && shouldPrepareCharacterListAppend(this)) {
+            scheduleProcessCharacterListAvatars(state);
+        }
+
+        return result;
+    }
+
+    patchedAppend.__baiBaiToolkitCharacterListAvatarLazyLoadPatched = true;
+    patchedAppend.__baiBaiToolkitOriginalAppend = originalAppend;
+    Object.assign(patchedAppend, originalAppend);
+
+    state.originalAppend = originalAppend;
+    state.patchedAppend = patchedAppend;
+    globalThis.jQuery.fn.append = patchedAppend;
+}
+
+function restoreCharacterListAvatarAppendPatch(state) {
+    if (!state.patchedAppend || !globalThis.jQuery?.fn) {
+        return;
+    }
+
+    if (globalThis.jQuery.fn.append === state.patchedAppend && typeof state.originalAppend === 'function') {
+        globalThis.jQuery.fn.append = state.originalAppend;
+    }
+
+    state.originalAppend = null;
+    state.patchedAppend = null;
+}
+
+function installCharacterListAvatarNativeAppendPatch(state) {
+    const originalAppend = typeof Element !== 'undefined' ? Element.prototype.append : null;
+
+    if (typeof originalAppend !== 'function' || state.patchedNativeAppend === originalAppend) {
+        return;
+    }
+
+    if (state.patchedNativeAppend && Element.prototype.append === state.patchedNativeAppend) {
+        return;
+    }
+
+    function patchedNativeAppend(...args) {
+        if (settings.characterListAvatarLazyLoadEnabled && shouldPrepareCharacterListNativeAppend(this)) {
+            prepareCharacterListAvatarAppendArguments(args, state);
+        }
+
+        const result = originalAppend.apply(this, args);
+
+        if (settings.characterListAvatarLazyLoadEnabled && shouldPrepareCharacterListNativeAppend(this)) {
+            scheduleProcessCharacterListAvatars(state);
+        }
+
+        return result;
+    }
+
+    patchedNativeAppend.__baiBaiToolkitCharacterListAvatarLazyLoadPatched = true;
+    patchedNativeAppend.__baiBaiToolkitOriginalAppend = originalAppend;
+
+    state.originalNativeAppend = originalAppend;
+    state.patchedNativeAppend = patchedNativeAppend;
+    Element.prototype.append = patchedNativeAppend;
+}
+
+function restoreCharacterListAvatarNativeAppendPatch(state) {
+    if (!state.patchedNativeAppend || typeof Element === 'undefined') {
+        return;
+    }
+
+    if (Element.prototype.append === state.patchedNativeAppend && typeof state.originalNativeAppend === 'function') {
+        Element.prototype.append = state.originalNativeAppend;
+    }
+
+    state.originalNativeAppend = null;
+    state.patchedNativeAppend = null;
+}
+
+function shouldPrepareCharacterListAppend(targets) {
+    if (!targets || typeof targets.length !== 'number') {
+        return false;
+    }
+
+    for (const target of targets) {
+        if (target instanceof Element && target.matches(AVATAR_LAZY_LOAD_APPEND_TARGET_SELECTOR)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function shouldPrepareCharacterListNativeAppend(target) {
+    return target instanceof Element && target.matches(AVATAR_LAZY_LOAD_NATIVE_APPEND_TARGET_SELECTOR);
+}
+
+function prepareCharacterListAvatarAppendArguments(args, state) {
+    for (const arg of args) {
+        prepareCharacterListAvatarAppendArgument(arg, state);
+    }
+}
+
+function prepareCharacterListAvatarAppendArgument(arg, state) {
+    if (!arg) {
+        return;
+    }
+
+    if (arg instanceof Node) {
+        deferCharacterListAvatarNode(arg, state, { requireListContainer: false, observe: false });
+        return;
+    }
+
+    if (arg.jquery && typeof arg.each === 'function') {
+        arg.each((_, element) => {
+            if (element instanceof Node) {
+                deferCharacterListAvatarNode(element, state, { requireListContainer: false, observe: false });
+            }
+        });
+        return;
+    }
+
+    if (Array.isArray(arg)) {
+        for (const item of arg) {
+            prepareCharacterListAvatarAppendArgument(item, state);
+        }
+    }
+}
+
+function installCharacterListAvatarMutationObserver(state) {
+    if (state.mutationObserver) {
+        return;
+    }
+
+    const root = document.body || document.documentElement;
+
+    if (!root) {
+        return;
+    }
+
+    state.mutationObserver = new MutationObserver((mutations) => {
+        if (!settings.characterListAvatarLazyLoadEnabled || !state.enabled) {
+            return;
+        }
+
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                deferCharacterListAvatarNode(node, state);
+            }
+        }
+    });
+
+    state.mutationObserver.observe(root, { childList: true, subtree: true });
+}
+
+function installCharacterListAvatarPageLoadedHandler(state) {
+    if (state.characterPageLoadedHandler) {
+        return;
+    }
+
+    state.characterPageLoadedHandler = () => scheduleProcessCharacterListAvatars(state);
+    eventSource.on(event_types.CHARACTER_PAGE_LOADED, state.characterPageLoadedHandler);
+}
+
+function installCharacterListAvatarIntersectionObserver(state) {
+    if (state.intersectionObserver) {
+        return;
+    }
+
+    state.intersectionObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (entry.isIntersecting || entry.intersectionRatio > 0) {
+                loadCharacterListAvatar(entry.target, state);
+            }
+        }
+    }, {
+        root: null,
+        rootMargin: CHARACTER_LIST_LAZY_AVATAR_ROOT_MARGIN,
+        threshold: 0,
+    });
+}
+
+function scheduleProcessCharacterListAvatars(state) {
+    if (state.processTimer) {
+        clearTimeout(state.processTimer);
+    }
+
+    state.processTimer = setTimeout(() => {
+        state.processTimer = null;
+        processCharacterListAvatars(state);
+    }, 0);
+}
+
+function processCharacterListAvatars(state) {
+    if (!settings.characterListAvatarLazyLoadEnabled || !state.enabled) {
+        return;
+    }
+
+    if (typeof IntersectionObserver !== 'function') {
+        applyNativeCharacterListImageHints();
+        return;
+    }
+
+    if (!state.intersectionObserver) {
+        installCharacterListAvatarIntersectionObserver(state);
+    }
+
+    document.querySelectorAll(AVATAR_LAZY_LOAD_SELECTOR).forEach(img => {
+        deferCharacterListAvatarImage(img, state, { requireListContainer: true, observe: true });
+    });
+}
+
+function deferCharacterListAvatarNode(node, state, { requireListContainer = true, observe = true } = {}) {
+    if (!(node instanceof Element)) {
+        return;
+    }
+
+    if (node instanceof HTMLImageElement) {
+        deferCharacterListAvatarImage(node, state, { requireListContainer, observe });
+    }
+
+    const selector = requireListContainer ? AVATAR_LAZY_LOAD_SELECTOR : AVATAR_LAZY_LOAD_RELATIVE_SELECTOR;
+    node.querySelectorAll?.(selector).forEach(img => {
+        deferCharacterListAvatarImage(img, state, { requireListContainer, observe });
+    });
+}
+
+function deferCharacterListAvatarImage(img, state, { requireListContainer = true, observe = true } = {}) {
+    if (!(img instanceof HTMLImageElement)) {
+        return;
+    }
+
+    if (requireListContainer && !img.matches(AVATAR_LAZY_LOAD_SELECTOR)) {
+        return;
+    }
+
+    if (!requireListContainer && !img.matches(AVATAR_LAZY_LOAD_RELATIVE_SELECTOR)) {
+        return;
+    }
+
+    const pendingSrc = img.dataset[CHARACTER_LIST_LAZY_AVATAR_SRC_DATASET_KEY];
+
+    if (pendingSrc) {
+        observeCharacterListAvatar(img, state, observe);
+        return;
+    }
+
+    const src = img.getAttribute('src') || '';
+
+    if (!isCharacterListAvatarThumbnailUrl(src)) {
+        applyCharacterListImageHints(img);
+        return;
+    }
+
+    img.dataset[CHARACTER_LIST_LAZY_AVATAR_SRC_DATASET_KEY] = src;
+    img.setAttribute('src', CHARACTER_LIST_LAZY_AVATAR_PLACEHOLDER_SRC);
+    img.classList.add(CHARACTER_LIST_LAZY_AVATAR_PENDING_CLASS);
+    img.classList.remove(CHARACTER_LIST_LAZY_AVATAR_LOADED_CLASS);
+    img.closest('.avatar')?.classList.add(CHARACTER_LIST_LAZY_AVATAR_SHELL_CLASS);
+    applyCharacterListImageHints(img);
+    observeCharacterListAvatar(img, state, observe);
+}
+
+function observeCharacterListAvatar(img, state, observe) {
+    if (!observe || !state?.intersectionObserver || !document.documentElement.contains(img)) {
+        return;
+    }
+
+    state.intersectionObserver.observe(img);
+}
+
+function loadCharacterListAvatar(target, state = getCharacterListAvatarLazyLoadState()) {
+    if (!(target instanceof HTMLImageElement)) {
+        return;
+    }
+
+    const src = target.dataset[CHARACTER_LIST_LAZY_AVATAR_SRC_DATASET_KEY];
+
+    if (!src) {
+        state?.intersectionObserver?.unobserve(target);
+        return;
+    }
+
+    state?.intersectionObserver?.unobserve(target);
+    target.dataset[CHARACTER_LIST_LAZY_AVATAR_SRC_DATASET_KEY] = '';
+    delete target.dataset[CHARACTER_LIST_LAZY_AVATAR_SRC_DATASET_KEY];
+    target.classList.remove(CHARACTER_LIST_LAZY_AVATAR_PENDING_CLASS);
+    target.classList.add(CHARACTER_LIST_LAZY_AVATAR_LOADED_CLASS);
+    target.closest('.avatar')?.classList.remove(CHARACTER_LIST_LAZY_AVATAR_SHELL_CLASS);
+    target.setAttribute('src', src);
+    applyCharacterListImageHints(target);
+}
+
+function restorePendingCharacterListAvatars() {
+    const datasetSelector = `img[data-${toKebabCase(CHARACTER_LIST_LAZY_AVATAR_SRC_DATASET_KEY)}]`;
+    document.querySelectorAll(datasetSelector).forEach(img => loadCharacterListAvatar(img));
+    document.querySelectorAll(`.${CHARACTER_LIST_LAZY_AVATAR_PENDING_CLASS}`).forEach(img => {
+        img.classList.remove(CHARACTER_LIST_LAZY_AVATAR_PENDING_CLASS);
+    });
+    document.querySelectorAll(`.${CHARACTER_LIST_LAZY_AVATAR_SHELL_CLASS}`).forEach(element => {
+        element.classList.remove(CHARACTER_LIST_LAZY_AVATAR_SHELL_CLASS);
+    });
+}
+
+function applyNativeCharacterListImageHints() {
+    document.querySelectorAll(AVATAR_LAZY_LOAD_SELECTOR).forEach(img => {
+        if (img instanceof HTMLImageElement) {
+            applyCharacterListImageHints(img);
+        }
+    });
+}
+
+function applyCharacterListImageHints(img) {
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.setAttribute('fetchpriority', 'low');
+}
+
+function isCharacterListAvatarThumbnailUrl(src) {
+    if (!src || src === CHARACTER_LIST_LAZY_AVATAR_PLACEHOLDER_SRC) {
+        return false;
+    }
+
+    try {
+        const url = new URL(src, location.origin);
+        const type = url.searchParams.get('type');
+        return url.origin === location.origin
+            && url.pathname === '/thumbnail'
+            && (type === 'avatar' || type === 'persona')
+            && url.searchParams.has('file');
+    } catch {
+        return false;
+    }
+}
+
+function installCharacterListAvatarLazyLoadStyle() {
+    let style = document.getElementById(CHARACTER_LIST_AVATAR_LAZY_LOAD_STYLE_ID);
+
+    if (!style) {
+        style = document.createElement('style');
+        style.id = CHARACTER_LIST_AVATAR_LAZY_LOAD_STYLE_ID;
+        document.head.append(style);
+    }
+
+    style.textContent = `
+${CHARACTER_LIST_SELECTOR} .character_select {
+    content-visibility: auto;
+    contain-intrinsic-size: 72px;
+}
+
+${PERSONA_LIST_SELECTOR} .avatar-container,
+${WELCOME_RECENT_CHAT_SELECTOR} {
+    content-visibility: auto;
+    contain-intrinsic-size: 72px;
+}
+
+body.charListGrid ${CHARACTER_LIST_SELECTOR} .character_select {
+    contain-intrinsic-size: 160px 120px;
+}
+
+${CHARACTER_LIST_SELECTOR} .${CHARACTER_LIST_LAZY_AVATAR_SHELL_CLASS},
+${PERSONA_LIST_SELECTOR} .${CHARACTER_LIST_LAZY_AVATAR_SHELL_CLASS},
+${WELCOME_RECENT_CHAT_SELECTOR} .${CHARACTER_LIST_LAZY_AVATAR_SHELL_CLASS} {
+    background: var(--SmartThemeBlurTintColor);
+}
+
+${CHARACTER_LIST_SELECTOR} img.${CHARACTER_LIST_LAZY_AVATAR_PENDING_CLASS},
+${PERSONA_LIST_SELECTOR} img.${CHARACTER_LIST_LAZY_AVATAR_PENDING_CLASS},
+${WELCOME_RECENT_CHAT_SELECTOR} img.${CHARACTER_LIST_LAZY_AVATAR_PENDING_CLASS} {
+    opacity: 0.01;
+}
+
+${CHARACTER_LIST_SELECTOR} img.${CHARACTER_LIST_LAZY_AVATAR_LOADED_CLASS},
+${PERSONA_LIST_SELECTOR} img.${CHARACTER_LIST_LAZY_AVATAR_LOADED_CLASS},
+${WELCOME_RECENT_CHAT_SELECTOR} img.${CHARACTER_LIST_LAZY_AVATAR_LOADED_CLASS} {
+    opacity: 1;
+    transition: opacity 120ms ease;
+}
+`;
+}
+
+function removeCharacterListAvatarLazyLoadStyle() {
+    document.getElementById(CHARACTER_LIST_AVATAR_LAZY_LOAD_STYLE_ID)?.remove();
+}
+
 function shouldDeferWorldInfoCharacterFilterAppend(targets, args) {
     if (!settings.worldInfoDrawerOptimizationEnabled) {
         return false;
@@ -8361,6 +9443,819 @@ function isPowerUserResizeHandler(handler) {
     return source.includes('adjustAutocompleteDebounced')
         && source.includes('setHotswapsDebounced')
         && source.includes('power_user.movingUIState');
+}
+
+function applyFastChatGetOptimization() {
+    const hook = installFastChatGetFetchHook();
+    if (hook) {
+        hook.isEnabled = () => settings.progressiveChatLoadingEnabled === true;
+    }
+
+    installFastChatGetInteractionGuard();
+}
+
+function getFastChatGetState() {
+    if (!extensionState.fastChatGet || typeof extensionState.fastChatGet !== 'object') {
+        extensionState.fastChatGet = {
+            requestId: 0,
+            current: null,
+            lastNoticeAt: 0,
+        };
+    }
+
+    return extensionState.fastChatGet;
+}
+
+function installFastChatGetInteractionGuard() {
+    const state = getFastChatGetState();
+    if (state.interactionGuardInstalled) {
+        return;
+    }
+
+    state.interactionGuardInstalled = true;
+
+    document.addEventListener('click', (event) => {
+        if (!isFastChatGetHydrating()) {
+            return;
+        }
+
+        const target = event.target instanceof Element
+            ? event.target.closest(FAST_CHAT_GET_ACTION_SELECTOR)
+            : null;
+        const messageMultiClick = event.target instanceof Element
+            && event.detail >= 2
+            && Boolean(event.target.closest('#chat .mes[mesid]'));
+
+        if (!target && !messageMultiClick) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        notifyFastChatGetBlocked();
+    }, true);
+
+    document.addEventListener('keydown', (event) => {
+        if (!isFastChatGetHydrating()) {
+            return;
+        }
+
+        const target = event.target;
+        const isSendEnter = target instanceof HTMLElement
+            && target.id === 'send_textarea'
+            && event.key === 'Enter'
+            && (event.ctrlKey || event.metaKey || !event.shiftKey);
+
+        if (!isSendEnter) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        notifyFastChatGetBlocked();
+    }, true);
+}
+
+function isFastChatGetHydrating() {
+    const current = getFastChatGetState().current;
+    return settings.progressiveChatLoadingEnabled === true
+        && Boolean(current?.loadingFull);
+}
+
+function notifyFastChatGetBlocked() {
+    const state = getFastChatGetState();
+    const now = Date.now();
+    if (now - Number(state.lastNoticeAt || 0) < 1500) {
+        return;
+    }
+
+    state.lastNoticeAt = now;
+    if (globalThis.toastr?.info) {
+        globalThis.toastr.info('聊天记录正在补全，请稍候再操作。', '柏宝库');
+    }
+}
+
+function installFastChatGetFetchHook() {
+    const existing = globalThis[FAST_CHAT_GET_FETCH_KEY];
+    if (existing?.wrappedFetch) {
+        return existing;
+    }
+
+    const originalFetch = globalThis.fetch;
+
+    if (typeof originalFetch !== 'function') {
+        return null;
+    }
+
+    const state = {
+        originalFetch: originalFetch.bind(globalThis),
+        wrappedFetch: null,
+        isEnabled: () => settings.progressiveChatLoadingEnabled === true,
+    };
+
+    state.wrappedFetch = async function baiBaiToolkitFastChatGetFetch(input, init) {
+        try {
+            if (isFastChatGetSaveRequest(input, init) && isFastChatGetHydrating()) {
+                notifyFastChatGetBlocked();
+                return buildFastChatGetBlockedResponse();
+            }
+
+            if (!state.isEnabled()) {
+                return state.originalFetch(input, init);
+            }
+
+            const requestInfo = await getFastChatGetRequestInfo(input, init);
+            if (!requestInfo) {
+                return state.originalFetch(input, init);
+            }
+
+            return await fetchFastChatInitial(state.originalFetch, requestInfo, input, init);
+        } catch (error) {
+            console.debug(`${LOG_PREFIX} Fast chat get path failed; falling back to native chat get`, error);
+            return state.originalFetch(input, init);
+        }
+    };
+
+    state.wrappedFetch[FAST_CHAT_GET_FETCH_KEY] = true;
+    globalThis[FAST_CHAT_GET_FETCH_KEY] = state;
+    globalThis.fetch = state.wrappedFetch;
+    return state;
+}
+
+function isFastChatGetSaveRequest(input, init) {
+    const rawUrl = getFetchRequestUrl(input);
+    if (!rawUrl || getFetchRequestMethod(input, init) !== 'POST') {
+        return false;
+    }
+
+    try {
+        const url = new URL(rawUrl, location.href);
+        return url.origin === location.origin && FAST_CHAT_GET_SAVE_PATHS.has(url.pathname);
+    } catch {
+        return false;
+    }
+}
+
+async function getFastChatGetRequestInfo(input, init) {
+    const rawUrl = getFetchRequestUrl(input);
+
+    if (!rawUrl || getFetchRequestMethod(input, init) !== 'POST') {
+        return null;
+    }
+
+    let url;
+    try {
+        url = new URL(rawUrl, location.href);
+    } catch {
+        return null;
+    }
+
+    if (url.origin !== location.origin || !FAST_CHAT_GET_PATHS.has(url.pathname)) {
+        return null;
+    }
+
+    const body = await readFetchJsonBody(input, init);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return null;
+    }
+
+    return {
+        path: url.pathname,
+        body,
+    };
+}
+
+async function fetchFastChatInitial(fetchFn, requestInfo, input, init) {
+    const response = await fetchFastChatPayload(fetchFn, input, init, {
+        source: requestInfo.path,
+        mode: 'initial',
+        originalRequest: requestInfo.body,
+        thresholdBytes: FAST_CHAT_GET_DEFAULT_THRESHOLD_BYTES,
+        initialMessages: getFastChatInitialMessageCount(),
+    });
+
+    const data = normalizeFastChatGetPayload(response);
+    if (!Array.isArray(data.chat)) {
+        throw new Error('BaiBaoKu fast chat get returned a non-array chat payload');
+    }
+
+    if (data.kind === 'partial' || data.meta?.partial === true) {
+        beginFastChatHydration(fetchFn, requestInfo, input, init, data);
+    } else {
+        clearFastChatHydration();
+    }
+
+    return buildFastChatGetArrayResponse(data.chat);
+}
+
+async function fetchFastChatPayload(fetchFn, input, init, payload) {
+    const headers = buildFetchHeaders(input, init);
+    const requestHeaders = getRequestHeaders();
+    for (const [key, value] of Object.entries(requestHeaders || {})) {
+        if (!headers.has(key)) {
+            headers.set(key, value);
+        }
+    }
+    headers.set('Content-Type', 'application/json');
+
+    const fastInit = {
+        ...copyFetchRequestOptions(input, init),
+        method: 'POST',
+        headers,
+        cache: 'no-store',
+        body: JSON.stringify(payload),
+    };
+
+    const response = await fetchFn(BAIBAOKU_FAST_CHAT_GET_URL, fastInit);
+    const json = await response.clone().json().catch(() => null);
+    if (!response?.ok || !json) {
+        throw new Error(`Unexpected status ${response?.status || 'unknown'}`);
+    }
+
+    const data = json?.data && typeof json.data === 'object' ? json.data : json;
+    if (json?.ok === false || data?.ok === false) {
+        throw new Error(json?.message || json?.error?.message || data?.message || data?.error?.message || 'BaiBaoKu fast chat get failed');
+    }
+
+    return data;
+}
+
+function normalizeFastChatGetPayload(data) {
+    if (!data || typeof data !== 'object') {
+        throw new Error('BaiBaoKu fast chat get returned an invalid payload');
+    }
+
+    return {
+        kind: String(data.kind || (data.meta?.partial ? 'partial' : 'complete')),
+        chat: data.chat,
+        meta: data.meta && typeof data.meta === 'object' ? data.meta : {},
+    };
+}
+
+function beginFastChatHydration(fetchFn, requestInfo, input, init, data) {
+    const state = getFastChatGetState();
+    const meta = data.meta || {};
+    const hydration = {
+        requestId: Number(state.requestId || 0) + 1,
+        loadingFull: true,
+        source: requestInfo.path,
+        originalRequest: requestInfo.body,
+        chatKey: String(meta.chatKey || ''),
+        version: String(meta.version || ''),
+        messageStartIndex: Math.max(0, Number(meta.messageStartIndex || 0)),
+        returnedMessages: Math.max(0, Number(meta.returnedMessages || getChatMessagesFromResponseChat(data.chat).length || 0)),
+        currentChatId: getCurrentChatId?.() ?? '',
+        startedAt: Date.now(),
+    };
+
+    state.requestId = hydration.requestId;
+    state.current = hydration;
+    document.body?.classList.add('bai-bai-toolkit-fast-chat-hydrating');
+
+    void hydrateFastChatInBackground(fetchFn, input, init, hydration)
+        .catch((error) => {
+            console.warn(`${LOG_PREFIX} Fast chat hydration failed`, error);
+            if (getFastChatGetState().current?.requestId === hydration.requestId && globalThis.toastr?.error) {
+                globalThis.toastr.error('聊天记录补全失败，请重新进入当前聊天。', '柏宝库');
+            }
+        });
+}
+
+async function hydrateFastChatInBackground(fetchFn, input, init, hydration) {
+    const payload = {
+        source: hydration.source,
+        mode: 'full',
+        originalRequest: hydration.originalRequest,
+        chatKey: hydration.chatKey,
+        version: hydration.version,
+    };
+
+    let data;
+    try {
+        data = normalizeFastChatGetPayload(await fetchFastChatPayload(fetchFn, input, init, payload));
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} BaiBaoKu full chat get failed; trying native chat get`, error);
+        data = {
+            kind: 'full',
+            chat: await fetchNativeFullChat(fetchFn, hydration),
+            meta: {
+                chatKey: hydration.chatKey,
+                version: hydration.version,
+            },
+        };
+    }
+
+    if (!isCurrentFastChatHydration(hydration, data.meta)) {
+        if (getFastChatGetState().current?.requestId === hydration.requestId) {
+            clearFastChatHydration(hydration.requestId);
+            if (globalThis.toastr?.warning) {
+                globalThis.toastr.warning('聊天记录补全状态已过期，请重新进入当前聊天。', '柏宝库');
+            }
+        }
+        return;
+    }
+
+    completeFastChatHydration(hydration, data);
+}
+
+async function fetchNativeFullChat(fetchFn, hydration) {
+    const headers = new Headers(getRequestHeaders());
+    if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', 'application/json');
+    }
+
+    const response = await fetchFn(hydration.source, {
+        method: 'POST',
+        headers,
+        cache: 'no-store',
+        body: JSON.stringify(hydration.originalRequest || {}),
+    });
+    const data = await response.clone().json().catch(() => null);
+    if (!response?.ok || !Array.isArray(data)) {
+        throw new Error(`Native chat get returned ${response?.status || 'invalid data'}`);
+    }
+
+    return data;
+}
+
+function isCurrentFastChatHydration(hydration, meta = {}) {
+    const current = getFastChatGetState().current;
+    if (!current || current.requestId !== hydration.requestId || !current.loadingFull) {
+        return false;
+    }
+
+    if (hydration.chatKey && meta?.chatKey && String(meta.chatKey) !== hydration.chatKey) {
+        return false;
+    }
+
+    if (hydration.version && meta?.version && String(meta.version) !== hydration.version) {
+        return false;
+    }
+
+    const currentChatId = getCurrentChatId?.() ?? '';
+    return String(currentChatId) === String(hydration.currentChatId);
+}
+
+function completeFastChatHydration(hydration, data) {
+    const messages = getChatMessagesFromResponseChat(data.chat);
+    if (!messages.length && Array.isArray(data.chat) && data.chat.length > 0) {
+        throw new Error('Full chat payload did not contain messages');
+    }
+
+    const chatArray = Array.isArray(scriptModule.chat) ? scriptModule.chat : null;
+    if (!chatArray) {
+        throw new Error('SillyTavern chat array is unavailable');
+    }
+
+    const chatElement = document.querySelector('#chat');
+    const scrollSnapshot = getFastChatScrollSnapshot(chatElement);
+
+    chatArray.splice(0, chatArray.length, ...messages);
+    scheduleFastChatDomCorrection(hydration);
+    syncFastChatShowMoreButton(messages.length);
+    emitFastChatHydratedEvents();
+    restoreFastChatScrollSnapshot(chatElement, scrollSnapshot);
+    clearFastChatHydration(hydration.requestId);
+
+    console.debug(`${LOG_PREFIX} Fast chat hydration completed`, {
+        messages: messages.length,
+        start: hydration.messageStartIndex,
+        returned: hydration.returnedMessages,
+    });
+}
+
+function getChatMessagesFromResponseChat(chat) {
+    if (!Array.isArray(chat)) {
+        return [];
+    }
+
+    if (chat[0]?.chat_metadata) {
+        return chat.slice(1);
+    }
+
+    return chat;
+}
+
+function correctFastChatDomMessageIds(hydration) {
+    const messages = [...document.querySelectorAll('#chat .mes[mesid]')]
+        .filter(element => element instanceof HTMLElement);
+
+    messages.forEach((element, index) => {
+        const realId = hydration.messageStartIndex + index;
+        element.setAttribute('mesid', String(realId));
+        element.dataset.mesid = String(realId);
+        element.dataset.messageId = String(realId);
+
+        const display = element.querySelector('.mesIDDisplay');
+        if (display instanceof HTMLElement) {
+            display.textContent = `#${realId}`;
+        }
+    });
+}
+
+function scheduleFastChatDomCorrection(hydration) {
+    correctFastChatDomMessageIds(hydration);
+    requestAnimationFrame(() => correctFastChatDomMessageIds(hydration));
+    setTimeout(() => correctFastChatDomMessageIds(hydration), 100);
+    setTimeout(() => correctFastChatDomMessageIds(hydration), 500);
+}
+
+function syncFastChatShowMoreButton(fullMessageCount) {
+    const button = document.querySelector('#show_more_messages');
+    if (!(button instanceof HTMLElement)) {
+        return;
+    }
+
+    const renderedMessages = document.querySelectorAll('#chat .mes[mesid]').length;
+    if (renderedMessages <= 0 || renderedMessages >= fullMessageCount) {
+        return;
+    }
+
+    button.classList.remove('disabled', 'displayNone', 'hidden');
+    button.removeAttribute('disabled');
+    button.removeAttribute('aria-disabled');
+    button.style.display = '';
+}
+
+function emitFastChatHydratedEvents() {
+    try {
+        if (event_types.MORE_MESSAGES_LOADED) {
+            eventSource.emit(event_types.MORE_MESSAGES_LOADED);
+        }
+        if (event_types.CHAT_LOADED) {
+            eventSource.emit(event_types.CHAT_LOADED);
+        }
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} Failed to emit fast chat hydration events`, error);
+    }
+}
+
+function clearFastChatHydration(requestId = null) {
+    const state = getFastChatGetState();
+    if (requestId !== null && state.current?.requestId !== requestId) {
+        return;
+    }
+
+    state.current = null;
+    document.body?.classList.remove('bai-bai-toolkit-fast-chat-hydrating');
+}
+
+function getFastChatInitialMessageCount() {
+    const truncation = Number(power_user?.chat_truncation);
+    if (Number.isInteger(truncation) && truncation > 0) {
+        return truncation;
+    }
+
+    return FAST_CHAT_GET_DEFAULT_INITIAL_MESSAGES;
+}
+
+function buildFastChatGetArrayResponse(chat) {
+    return new Response(JSON.stringify(chat), {
+        status: 200,
+        statusText: 'OK',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+    });
+}
+
+function buildFastChatGetBlockedResponse() {
+    return new Response(JSON.stringify({
+        error: true,
+        message: 'Chat is still hydrating. Please wait for the full chat to load.',
+    }), {
+        status: 409,
+        statusText: 'Conflict',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+    });
+}
+
+function getFastChatScrollSnapshot(chatElement) {
+    if (!(chatElement instanceof HTMLElement)) {
+        return null;
+    }
+
+    return {
+        top: chatElement.scrollTop,
+        height: chatElement.scrollHeight,
+    };
+}
+
+function restoreFastChatScrollSnapshot(chatElement, snapshot) {
+    if (!(chatElement instanceof HTMLElement) || !snapshot) {
+        return;
+    }
+
+    const restore = () => {
+        const delta = chatElement.scrollHeight - snapshot.height;
+        chatElement.scrollTop = Math.max(0, snapshot.top + delta);
+    };
+
+    restore();
+    requestAnimationFrame(restore);
+}
+
+function disableFastSettingsBootstrapFetchHook() {
+    const existing = globalThis[FAST_SETTINGS_BOOTSTRAP_FETCH_KEY];
+
+    if (!existing?.wrappedFetch) {
+        return;
+    }
+
+    existing.isEnabled = () => false;
+    existing.cachedBootstrapTextPromise = null;
+    existing.cachedBootstrapTextExpiresAt = 0;
+
+    if (globalThis.fetch === existing.wrappedFetch && typeof existing.originalFetch === 'function') {
+        globalThis.fetch = existing.originalFetch;
+    }
+}
+
+function installFastSettingsBootstrapFetchHook() {
+    const existing = globalThis[FAST_SETTINGS_BOOTSTRAP_FETCH_KEY];
+    if (existing?.wrappedFetch) {
+        existing.isEnabled = () => false;
+        return existing;
+    }
+
+    const originalFetch = globalThis.fetch;
+
+    if (typeof originalFetch !== 'function') {
+        return null;
+    }
+
+    const state = {
+        originalFetch: originalFetch.bind(globalThis),
+        wrappedFetch: null,
+        cachedBootstrapTextPromise: null,
+        cachedBootstrapTextExpiresAt: 0,
+        hitCount: 0,
+        isEnabled: () => false,
+    };
+
+    state.wrappedFetch = async function baiBaiToolkitFastSettingsBootstrapFetch(input, init) {
+        try {
+            if (!state.isEnabled()) {
+                return state.originalFetch(input, init);
+            }
+
+            if (!(await isFastSettingsBootstrapRequest(input, init))) {
+                return state.originalFetch(input, init);
+            }
+
+            state.hitCount += 1;
+            console.debug(`${LOG_PREFIX} Fast settings bootstrap intercept #${state.hitCount}`);
+            return await fetchFastSettingsBootstrap(state.originalFetch, input, init, state);
+        } catch (error) {
+            console.debug(`${LOG_PREFIX} Fast settings bootstrap path failed; falling back to /api/settings/get`, error);
+            return state.originalFetch(input, init);
+        }
+    };
+
+    state.wrappedFetch[FAST_SETTINGS_BOOTSTRAP_FETCH_KEY] = true;
+    globalThis[FAST_SETTINGS_BOOTSTRAP_FETCH_KEY] = state;
+    globalThis.fetch = state.wrappedFetch;
+    return state;
+}
+
+async function isFastSettingsBootstrapRequest(input, init) {
+    const rawUrl = getFetchRequestUrl(input);
+
+    if (!rawUrl || getFetchRequestMethod(input, init) !== 'POST') {
+        return false;
+    }
+
+    try {
+        const url = new URL(rawUrl, location.href);
+        if (url.origin !== location.origin || url.pathname !== '/api/settings/get') {
+            return false;
+        }
+    } catch {
+        return false;
+    }
+
+    const body = await readFetchJsonBody(input, init);
+    if (body === null) {
+        return !hasFetchBody(input, init);
+    }
+
+    return isPlainEmptyObject(body);
+}
+
+async function fetchFastSettingsBootstrap(fetchFn, input, init, state) {
+    const text = await getFastSettingsBootstrapText(fetchFn, input, init, state);
+    return new Response(text, {
+        status: 200,
+        statusText: 'OK',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+    });
+}
+
+async function getFastSettingsBootstrapText(fetchFn, input, init, state) {
+    const cacheExpired = state.cachedBootstrapTextExpiresAt > 0 && Date.now() > state.cachedBootstrapTextExpiresAt;
+    if (!state.cachedBootstrapTextPromise || cacheExpired) {
+        state.cachedBootstrapTextPromise = fetchFastSettingsBootstrapText(fetchFn, input, init)
+            .then((text) => {
+                state.cachedBootstrapTextExpiresAt = Date.now() + FAST_SETTINGS_BOOTSTRAP_CACHE_MS;
+                return text;
+            })
+            .catch((error) => {
+                state.cachedBootstrapTextPromise = null;
+                state.cachedBootstrapTextExpiresAt = 0;
+                throw error;
+            });
+    }
+
+    return await state.cachedBootstrapTextPromise;
+}
+
+async function fetchFastSettingsBootstrapText(fetchFn, input, init) {
+    const headers = buildFetchHeaders(input, init);
+    const requestHeaders = getRequestHeaders();
+    for (const [key, value] of Object.entries(requestHeaders || {})) {
+        if (!headers.has(key)) {
+            headers.set(key, value);
+        }
+    }
+
+    const fastInit = {
+        ...copyFetchRequestOptions(input, init),
+        ...(init || {}),
+        method: 'POST',
+        headers,
+    };
+    delete fastInit.body;
+
+    const response = await fetchFn('/api/plugins/baibaoku/v1/settings/fast-bootstrap', fastInit);
+    if (!response?.ok) {
+        throw new Error(`Unexpected status ${response?.status || 'unknown'}`);
+    }
+
+    const text = await response.text();
+    const data = parseJsonOrNull(text);
+    if (!data || typeof data.settings !== 'string' || !data.bootstrap?.partial) {
+        throw new Error('Fast settings bootstrap returned an invalid payload');
+    }
+
+    return text;
+}
+
+function installFastCharacterListFetchHook() {
+    const existing = globalThis[FAST_CHARACTER_LIST_FETCH_KEY];
+    if (existing?.wrappedFetch) {
+        existing.isEnabled = () => false;
+        return existing;
+    }
+
+    const originalFetch = globalThis.fetch;
+
+    if (typeof originalFetch !== 'function') {
+        return null;
+    }
+
+    const state = {
+        originalFetch: originalFetch.bind(globalThis),
+        wrappedFetch: null,
+        isEnabled: () => false,
+    };
+
+    state.wrappedFetch = async function baiBaiToolkitFastCharacterListFetch(input, init) {
+        try {
+            if (!state.isEnabled()) {
+                return state.originalFetch(input, init);
+            }
+
+            if (!(await isFastCharacterListRequest(input, init))) {
+                return state.originalFetch(input, init);
+            }
+
+            return await fetchFastCharacterList(state.originalFetch, input, init);
+        } catch (error) {
+            console.debug(`${LOG_PREFIX} Fast character list path failed; falling back to /api/characters/all`, error);
+            return state.originalFetch(input, init);
+        }
+    };
+
+    state.wrappedFetch[FAST_CHARACTER_LIST_FETCH_KEY] = true;
+    globalThis[FAST_CHARACTER_LIST_FETCH_KEY] = state;
+    globalThis.fetch = state.wrappedFetch;
+    return state;
+}
+
+function disableFastCharacterListFetchHook() {
+    const existing = globalThis[FAST_CHARACTER_LIST_FETCH_KEY];
+
+    if (!existing?.wrappedFetch) {
+        return;
+    }
+
+    existing.isEnabled = () => false;
+
+    if (globalThis.fetch === existing.wrappedFetch && typeof existing.originalFetch === 'function') {
+        globalThis.fetch = existing.originalFetch;
+    }
+}
+
+async function isFastCharacterListRequest(input, init) {
+    const rawUrl = getFetchRequestUrl(input);
+
+    if (!rawUrl || getFetchRequestMethod(input, init) !== 'POST') {
+        return false;
+    }
+
+    try {
+        const url = new URL(rawUrl, location.href);
+        if (url.origin !== location.origin || url.pathname !== '/api/characters/all') {
+            return false;
+        }
+    } catch {
+        return false;
+    }
+
+    const body = await readFetchJsonBody(input, init);
+    return isPlainEmptyObject(body);
+}
+
+async function fetchFastCharacterList(fetchFn, input, init) {
+    const headers = buildFetchHeaders(input, init);
+    const requestHeaders = getRequestHeaders();
+    for (const [key, value] of Object.entries(requestHeaders || {})) {
+        if (!headers.has(key)) {
+            headers.set(key, value);
+        }
+    }
+
+    const fastInit = {
+        ...copyFetchRequestOptions(input, init),
+        ...(init || {}),
+        method: 'POST',
+        headers,
+    };
+    delete fastInit.body;
+
+    const response = await fetchFn('/api/plugins/baibaoku/v1/characters/fast-all', fastInit);
+    if (!response?.ok) {
+        throw new Error(`Unexpected status ${response?.status || 'unknown'}`);
+    }
+
+    const data = await response.clone().json().catch(() => null);
+    if (!Array.isArray(data)) {
+        throw new Error('Fast character list returned a non-array payload');
+    }
+
+    return response;
+}
+
+async function readFetchJsonBody(input, init) {
+    if (Object.prototype.hasOwnProperty.call(init || {}, 'body')) {
+        const body = init.body;
+        if (typeof body === 'string') {
+            return parseJsonOrNull(body);
+        }
+
+        if (isFetchBlob(body)) {
+            return parseJsonOrNull(await body.text());
+        }
+    }
+
+    if (!isFetchRequest(input) || input.bodyUsed || !input.body) {
+        return null;
+    }
+
+    try {
+        return await input.clone().json().catch(() => null);
+    } catch {
+        return null;
+    }
+}
+
+function hasFetchBody(input, init) {
+    if (Object.prototype.hasOwnProperty.call(init || {}, 'body')) {
+        const body = init.body;
+        return body !== undefined && body !== null && body !== '';
+    }
+
+    return isFetchRequest(input) && Boolean(input.body);
+}
+
+function parseJsonOrNull(text) {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return null;
+    }
+}
+
+function isPlainEmptyObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return false;
+    }
+
+    return Object.getPrototypeOf(value) === Object.prototype && Object.keys(value).length === 0;
 }
 
 function installSaveRequestGzipFetchHook() {
