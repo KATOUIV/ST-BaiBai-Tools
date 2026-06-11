@@ -28,7 +28,7 @@ import * as presetOptimizations from './presetOptimizations.js';
 
 const LOG_PREFIX = '[柏宝箱]';
 const MODULE_NAME = getModuleName();
-const CURRENT_VERSION = '0.24.17';
+const CURRENT_VERSION = '0.24.19';
 const EXTENSION_ID = getExtensionId();
 const SETTINGS_KEY = 'baiBaiToolkit';
 const EXTENSION_KEY = '__baiBaiToolkitExtensionInstalled';
@@ -57,6 +57,8 @@ const SAVE_GENERATE_DISPLAY_STYLE_ID = 'bai_bai_toolkit_save_generate_display_st
 const SAVE_GENERATE_DISPLAY_CLASS = 'bai-bai-save-generate-display';
 const SAVE_GENERATE_RECOVERY_BLOCK_SELECTOR = '#send_but, #option_regenerate';
 const SAVE_GENERATE_RECOVERY_BLOCK_TOAST_INTERVAL_MS = 1500;
+const SAVE_GENERATE_RECOVERY_CHAT_READY_TIMEOUT_MS = 3000;
+const SAVE_GENERATE_RECOVERY_CHAT_READY_INTERVAL_MS = 100;
 const SAVE_REQUEST_GZIP_FETCH_KEY = '__baiBaiToolkitSaveRequestGzipFetchPatched';
 const FAST_CHAT_GET_FETCH_KEY = '__baiBaiToolkitFastChatGetFetchPatched';
 const FAST_CHAT_GET_JQUERY_TRIGGER_GUARD_KEY = '__baiBaiToolkitFastChatGetJQueryTriggerGuardPatched';
@@ -10784,6 +10786,9 @@ function installSaveGenerateFetchHook() {
         if (!(existing.recoveryLocks instanceof Map)) {
             existing.recoveryLocks = new Map();
         }
+        if (!(existing.localTerminalWatchJobIds instanceof Set)) {
+            existing.localTerminalWatchJobIds = new Set();
+        }
         if (existing.activeSaveGenerateCancelTarget && typeof existing.activeSaveGenerateCancelTarget !== 'object') {
             existing.activeSaveGenerateCancelTarget = null;
         }
@@ -10816,6 +10821,7 @@ function installSaveGenerateFetchHook() {
         activeSaveGenerateCancelTarget: null,
         resumeCheckPromises: new Map(),
         recoveryLocks: new Map(),
+        localTerminalWatchJobIds: new Set(),
         resumeCheckTimer: null,
         resumeCheckScheduledChatId: '',
         resumeCheckScheduledLastMessageHash: '',
@@ -11032,6 +11038,9 @@ async function fetchSaveGenerate(state, requestInfo, input, init) {
                 createdAt: Date.now(),
                 consumed: false,
             });
+            watchLocalSaveGenerateTerminalStatus(state, jobId);
+        } else if (jobId && !response.ok) {
+            markSaveGenerateJobSeen({ id: jobId });
         }
 
         return response;
@@ -11311,6 +11320,39 @@ async function waitSaveGenerateJobTerminal(state, record, { onUpdate = null } = 
     return { id: record.id, status: 'timeout' };
 }
 
+function watchLocalSaveGenerateTerminalStatus(state, jobId) {
+    if (!state?.originalFetch || !jobId) {
+        return;
+    }
+
+    if (!(state.localTerminalWatchJobIds instanceof Set)) {
+        state.localTerminalWatchJobIds = new Set();
+    }
+
+    if (state.localTerminalWatchJobIds.has(jobId)) {
+        return;
+    }
+
+    state.localTerminalWatchJobIds.add(jobId);
+    void waitSaveGenerateJobTerminal(state, {
+        id: jobId,
+        status: '',
+        createdAt: Date.now(),
+    })
+        .then(job => {
+            const status = String(job?.status || '');
+            if (status === 'failed' || status === 'canceled') {
+                markSaveGenerateJobSeen(job);
+            }
+        })
+        .catch(error => {
+            console.debug(`${LOG_PREFIX} save-generate local terminal watch failed`, error);
+        })
+        .finally(() => {
+            state.localTerminalWatchJobIds?.delete(jobId);
+        });
+}
+
 async function fetchSaveGenerateJobStatus(fetchFn, jobId) {
     const headers = new Headers(getRequestHeaders());
     const response = await fetchFn(`${BAIBAOKU_SAVE_GENERATE_URL}/${encodeURIComponent(jobId)}`, {
@@ -11420,12 +11462,11 @@ function queueSaveGenerateResumeCheck(state, reason = 'unknown', delayMs = SAVE_
     refreshSaveGenerateRecoveryUiLock(state);
 
     state.resumeCheckTimer = setTimeout(() => {
-        const scheduledLastMessageHash = String(state.resumeCheckScheduledLastMessageHash || '');
         state.resumeCheckTimer = null;
         state.resumeCheckScheduledChatId = '';
         state.resumeCheckScheduledLastMessageHash = '';
         refreshSaveGenerateRecoveryUiLock(state);
-        void checkCurrentSaveGenerateJob(state, reason, { lastMessageHash: scheduledLastMessageHash });
+        void checkCurrentSaveGenerateJob(state, reason);
     }, delayMs);
 }
 
@@ -11845,9 +11886,9 @@ function installSaveGenerateDisplayStyle() {
     style.textContent = `
 .${SAVE_GENERATE_DISPLAY_CLASS} {
     position: fixed !important;
-    top: 18px !important;
+    top: auto !important;
     right: 18px !important;
-    bottom: auto !important;
+    bottom: 18px !important;
     left: auto !important;
     display: flex !important;
     flex-direction: column !important;
@@ -11863,7 +11904,7 @@ function installSaveGenerateDisplayStyle() {
     color: var(--SmartThemeBodyColor, #f1f1f1) !important;
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28) !important;
     opacity: 0 !important;
-    transform: translateY(-8px) !important;
+    transform: translateY(8px) !important;
     transition: opacity 220ms ease, transform 220ms ease !important;
     z-index: 50000 !important;
 }
@@ -12243,6 +12284,16 @@ async function maybeRecoverCurrentChatForSaveGenerateJob(job, chatId, reason = '
         return;
     }
 
+    await waitForSaveGenerateCurrentChatReady(chatId);
+    if (getCurrentSaveGenerateChatId() !== String(chatId || '')) {
+        return;
+    }
+
+    if (isCurrentSaveGenerateMessageAlreadyInserted(job)) {
+        markSaveGenerateJobSeen(job);
+        return;
+    }
+
     if (isSaveGenerateSendAsRecoverableType(job.save?.type)) {
         await insertSaveGenerateJobWithSendAs(job, chatId, reason);
         return;
@@ -12253,6 +12304,28 @@ async function maybeRecoverCurrentChatForSaveGenerateJob(job, chatId, reason = '
     await reloadCurrentChat().catch(error => {
         console.debug(`${LOG_PREFIX} save-generate chat reload failed`, error);
     });
+}
+
+async function waitForSaveGenerateCurrentChatReady(chatId) {
+    const normalizedChatId = String(chatId || '');
+    const deadline = Date.now() + SAVE_GENERATE_RECOVERY_CHAT_READY_TIMEOUT_MS;
+
+    while (Date.now() < deadline) {
+        if (getCurrentSaveGenerateChatId() !== normalizedChatId) {
+            return false;
+        }
+        if (isSaveGenerateCurrentChatContentReady()) {
+            return true;
+        }
+        await delaySaveGeneratePoll(SAVE_GENERATE_RECOVERY_CHAT_READY_INTERVAL_MS);
+    }
+
+    return getCurrentSaveGenerateChatId() === normalizedChatId && isSaveGenerateCurrentChatContentReady();
+}
+
+function isSaveGenerateCurrentChatContentReady() {
+    const messages = scriptModule.chat;
+    return Array.isArray(messages) && messages.some(message => message && !message.chat_metadata);
 }
 
 async function insertSaveGenerateJobWithSendAs(job, chatId, reason = 'unknown') {
