@@ -28,7 +28,7 @@ import * as presetOptimizations from './presetOptimizations.js';
 
 const LOG_PREFIX = '[柏宝箱]';
 const MODULE_NAME = getModuleName();
-const CURRENT_VERSION = '0.25.1';
+const CURRENT_VERSION = '0.25.2';
 const EXTENSION_ID = getExtensionId();
 const SETTINGS_KEY = 'baiBaiToolkit';
 const EXTENSION_KEY = '__baiBaiToolkitExtensionInstalled';
@@ -40,7 +40,7 @@ const BAIBAOKU_STATUS_URL = '/api/plugins/baibaoku/v1/status';
 const BAIBAOKU_FAST_CONFIG_URL = '/api/plugins/baibaoku/v1/fast-config';
 const BAIBAOKU_FAST_CHAT_GET_URL = '/api/plugins/baibaoku/v1/chats/fast-get';
 const BAIBAOKU_THEME_GET_URL = '/api/plugins/baibaoku/v1/themes/get';
-const BAIBAOKU_REQUIRED_BACKEND_VERSION = '0.4.1';
+const BAIBAOKU_REQUIRED_BACKEND_VERSION = '0.4.2';
 const BAIBAOKU_THEME_LOADING_STYLE_ID = 'bai_bai_toolkit_theme_loading_style';
 const BAIBAOKU_THEME_LOADING_HOST_CLASS = 'bai-bai-toolkit-theme-loading-host';
 const BAIBAOKU_THEME_LOADING_OVERLAY_CLASS = 'bai-bai-toolkit-theme-loading-overlay';
@@ -58,6 +58,8 @@ const SAVE_GENERATE_POLL_INTERVAL_MS = 500;
 const SAVE_GENERATE_POLL_TIMEOUT_MS = 90_000;
 const SAVE_GENERATE_RESUME_CHECK_DELAY_MS = 250;
 const SAVE_GENERATE_RESUME_CHECK_COOLDOWN_MS = 1500;
+const SAVE_GENERATE_INTENT_TTL_MS = 120_000;
+const SAVE_GENERATE_MAX_INTENTS = 8;
 const SAVE_GENERATE_SEEN_STORAGE_PREFIX = 'bai_bai_toolkit_save_generate_seen';
 const SAVE_GENERATE_DISPLAY_STYLE_ID = 'bai_bai_toolkit_save_generate_display_style';
 const SAVE_GENERATE_DISPLAY_CLASS = 'bai-bai-save-generate-display';
@@ -66,6 +68,9 @@ const SAVE_GENERATE_RECOVERY_BLOCK_TOAST_INTERVAL_MS = 1500;
 const SAVE_GENERATE_RECOVERY_CHAT_READY_TIMEOUT_MS = 3000;
 const SAVE_GENERATE_RECOVERY_CHAT_READY_INTERVAL_MS = 100;
 const SAVE_GENERATE_DEFAULT_ENABLED_MIGRATION_KEY = 'saveGenerateDefaultEnabledMigrated';
+const SAVE_GENERATE_BACKEND_CHECK_TTL_MS = 60_000;
+const SAVE_GENERATE_BACKEND_MISSING_RECHECK_MS = 10_000;
+const SAVE_GENERATE_BACKEND_CHECK_TIMEOUT_MS = 1500;
 const SAVE_REQUEST_GZIP_FETCH_KEY = '__baiBaiToolkitSaveRequestGzipFetchPatched';
 const FAST_CHAT_GET_FETCH_KEY = '__baiBaiToolkitFastChatGetFetchPatched';
 const FAST_CHAT_GET_JQUERY_TRIGGER_GUARD_KEY = '__baiBaiToolkitFastChatGetJQueryTriggerGuardPatched';
@@ -2935,6 +2940,7 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
 
     try {
         const status = await fetchBaibaokuStatus();
+        markSaveGenerateBackendAvailable(globalThis[SAVE_GENERATE_FETCH_KEY], true);
         const driver = status?.driver;
         panelState.cache = {
             ...(panelState.cache || {}),
@@ -3005,6 +3011,7 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
             console.debug(`${LOG_PREFIX} Failed to read BaiBaoKu fast config`, error);
         }
     } catch {
+        markSaveGenerateBackendAvailable(globalThis[SAVE_GENERATE_FETCH_KEY], false);
         updateBaibaokuStatusText(serverStatus, '未连接', false);
         updateBaibaokuStatusText(driverStatus, '未知', false);
     }
@@ -10986,6 +10993,13 @@ function installSaveGenerateFetchHook() {
         if (!(existing.localTerminalWatchJobIds instanceof Set)) {
             existing.localTerminalWatchJobIds = new Set();
         }
+        if (!Array.isArray(existing.saveGenerateIntents)) {
+            existing.saveGenerateIntents = [];
+        }
+        existing.saveGenerateIntentSerial = Number(existing.saveGenerateIntentSerial || 0);
+        existing.backendAvailable = existing.backendAvailable === true ? true : existing.backendAvailable === false ? false : null;
+        existing.backendCheckedAt = Number(existing.backendCheckedAt || 0);
+        existing.backendCheckPromise = null;
         if (existing.activeSaveGenerateCancelTarget && typeof existing.activeSaveGenerateCancelTarget !== 'object') {
             existing.activeSaveGenerateCancelTarget = null;
         }
@@ -10995,6 +11009,7 @@ function installSaveGenerateFetchHook() {
         existing.lastResumeCheckChatId = String(existing.lastResumeCheckChatId || '');
         existing.lastResumeCheckAt = Number(existing.lastResumeCheckAt || 0);
         existing.lastRecoveryBlockToastAt = Number(existing.lastRecoveryBlockToastAt || 0);
+        installSaveGenerateIntentHandlers(existing);
         installSaveGenerateNativeStopHandler(existing);
         installSaveGenerateRecoveryInputBlocker(existing);
         installSaveGenerateResumeHandlers(existing);
@@ -11019,6 +11034,11 @@ function installSaveGenerateFetchHook() {
         resumeCheckPromises: new Map(),
         recoveryLocks: new Map(),
         localTerminalWatchJobIds: new Set(),
+        saveGenerateIntents: [],
+        saveGenerateIntentSerial: 0,
+        backendAvailable: null,
+        backendCheckedAt: 0,
+        backendCheckPromise: null,
         resumeCheckTimer: null,
         resumeCheckScheduledChatId: '',
         resumeCheckScheduledLastMessageHash: '',
@@ -11043,8 +11063,13 @@ function installSaveGenerateFetchHook() {
                 return state.originalFetch(input, init);
             }
 
-            const requestInfo = await getSaveGenerateRequestInfo(input, init);
+            const requestInfo = await getSaveGenerateRequestInfo(state, input, init);
             if (!requestInfo) {
+                return state.originalFetch(input, init);
+            }
+
+            if (!await isSaveGenerateBackendAvailable(state)) {
+                console.debug(`${LOG_PREFIX} save-generate skipped: BaiBaoKu backend is unavailable`);
                 return state.originalFetch(input, init);
             }
 
@@ -11063,6 +11088,7 @@ function installSaveGenerateFetchHook() {
     state.wrappedFetch[SAVE_GENERATE_FETCH_KEY] = true;
     globalThis[SAVE_GENERATE_FETCH_KEY] = state;
     globalThis.fetch = state.wrappedFetch;
+    installSaveGenerateIntentHandlers(state);
     installSaveGenerateNativeStopHandler(state);
     installSaveGenerateRecoveryInputBlocker(state);
     installSaveGenerateResumeHandlers(state);
@@ -11071,7 +11097,70 @@ function installSaveGenerateFetchHook() {
     return state;
 }
 
-async function getSaveGenerateRequestInfo(input, init) {
+async function isSaveGenerateBackendAvailable(state) {
+    if (!state?.originalFetch) {
+        return false;
+    }
+
+    const now = Date.now();
+    const checkedAt = Number(state.backendCheckedAt || 0);
+    const ttl = state.backendAvailable === false
+        ? SAVE_GENERATE_BACKEND_MISSING_RECHECK_MS
+        : SAVE_GENERATE_BACKEND_CHECK_TTL_MS;
+    if (typeof state.backendAvailable === 'boolean' && now - checkedAt < ttl) {
+        return state.backendAvailable;
+    }
+
+    if (state.backendCheckPromise) {
+        return state.backendCheckPromise;
+    }
+
+    state.backendCheckPromise = checkSaveGenerateBackendAvailable(state.originalFetch)
+        .then(available => {
+            state.backendAvailable = available;
+            state.backendCheckedAt = Date.now();
+            return available;
+        })
+        .catch(error => {
+            console.debug(`${LOG_PREFIX} save-generate backend check failed`, error);
+            state.backendAvailable = false;
+            state.backendCheckedAt = Date.now();
+            return false;
+        })
+        .finally(() => {
+            state.backendCheckPromise = null;
+        });
+
+    return state.backendCheckPromise;
+}
+
+async function checkSaveGenerateBackendAvailable(fetchFn) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SAVE_GENERATE_BACKEND_CHECK_TIMEOUT_MS);
+
+    try {
+        const response = await fetchFn(BAIBAOKU_STATUS_URL, {
+            method: 'GET',
+            cache: 'no-store',
+            signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => null);
+        return Boolean(response.ok && payload?.ok === true && payload?.data?.installed === true);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function markSaveGenerateBackendAvailable(state, available) {
+    if (!state) {
+        return;
+    }
+
+    state.backendAvailable = Boolean(available);
+    state.backendCheckedAt = Date.now();
+}
+
+async function getSaveGenerateRequestInfo(state, input, init) {
     const rawUrl = getFetchRequestUrl(input);
     if (!rawUrl || getFetchRequestMethod(input, init) !== 'POST') {
         return null;
@@ -11115,7 +11204,12 @@ async function getSaveGenerateRequestInfo(input, init) {
         return skip('current chat identity is unavailable');
     }
 
-    return { body, save };
+    const intent = consumeSaveGenerateIntentForRequest(state, save, body);
+    if (!intent) {
+        return skip('no matching main chat generation intent');
+    }
+
+    return { body, save, intent };
 }
 
 function describeSaveGenerateBody(body) {
@@ -11149,6 +11243,218 @@ function isEligibleSaveGenerateBody(body) {
     }
 
     return Boolean(body.chat_completion_source);
+}
+
+function installSaveGenerateIntentHandlers(state) {
+    if (!state || state.saveGenerateIntentHandlersInstalled || typeof eventSource?.on !== 'function') {
+        return;
+    }
+
+    state.saveGenerateIntentHandlersInstalled = true;
+
+    if (event_types.GENERATION_AFTER_COMMANDS) {
+        eventSource.on(event_types.GENERATION_AFTER_COMMANDS, (type, options, dryRun) => {
+            recordSaveGenerateIntentFromGenerationEvent(state, type, options, dryRun);
+        });
+    }
+
+    if (event_types.CHAT_COMPLETION_SETTINGS_READY) {
+        eventSource.on(event_types.CHAT_COMPLETION_SETTINGS_READY, body => {
+            bindSaveGenerateIntentToRequestBody(state, body);
+        });
+    }
+}
+
+function recordSaveGenerateIntentFromGenerationEvent(state, type, options = {}, dryRun = false) {
+    cleanupSaveGenerateIntents(state);
+
+    if (settings.saveGenerateEnabled !== true || selected_group || dryRun) {
+        return;
+    }
+
+    const normalizedType = String(type || 'normal');
+    if (!['normal', 'regenerate'].includes(normalizedType)) {
+        return;
+    }
+
+    if (!isSaveGenerateMainChatGenerationOptions(options)) {
+        return;
+    }
+
+    const save = getCurrentSaveGenerateDescriptor({ type: normalizedType });
+    if (!save) {
+        return;
+    }
+
+    state.saveGenerateIntentSerial = Number(state.saveGenerateIntentSerial || 0) + 1;
+    state.saveGenerateIntents.push({
+        id: state.saveGenerateIntentSerial,
+        type: normalizedType,
+        chatId: save.chatId,
+        createdAt: Date.now(),
+        preparedAt: 0,
+        expectedBody: null,
+        expectedBodyHash: '',
+        lastMessageHashAtStart: getCurrentSaveGenerateLastMessageHash(),
+    });
+    cleanupSaveGenerateIntents(state);
+}
+
+function isSaveGenerateMainChatGenerationOptions(options) {
+    if (!options || typeof options !== 'object') {
+        return true;
+    }
+
+    if (options.force_chid !== undefined && options.force_chid !== null && options.force_chid !== '') {
+        return false;
+    }
+
+    if (Number(options.depth || 0) > 0) {
+        return false;
+    }
+
+    return !options.quiet_prompt && !options.quietToLoud && !options.quietImage && !options.quietName;
+}
+
+function bindSaveGenerateIntentToRequestBody(state, body) {
+    cleanupSaveGenerateIntents(state);
+
+    if (settings.saveGenerateEnabled !== true || selected_group || !isEligibleSaveGenerateBody(body)) {
+        return;
+    }
+
+    const type = String(body.type || 'normal');
+    const chatId = getCurrentSaveGenerateChatId();
+    if (!chatId) {
+        return;
+    }
+
+    const intents = Array.isArray(state?.saveGenerateIntents) ? state.saveGenerateIntents : [];
+    const intent = [...intents].reverse().find(item => {
+        return item
+            && !item.expectedBody
+            && item.type === type
+            && item.chatId === chatId;
+    });
+
+    if (!intent) {
+        return;
+    }
+
+    intent.expectedBody = body;
+    intent.preparedAt = Date.now();
+}
+
+function consumeSaveGenerateIntentForRequest(state, save, body) {
+    cleanupSaveGenerateIntents(state);
+
+    const chatId = String(save?.chatId || '').trim();
+    const type = String(save?.type || body?.type || 'normal');
+    if (!chatId || !isCurrentSaveGenerateChatTailReadyForAssistantReply()) {
+        return null;
+    }
+
+    const bodyHash = makeSaveGenerateRequestBodyHash(body);
+    const now = Date.now();
+    const intents = Array.isArray(state?.saveGenerateIntents) ? state.saveGenerateIntents : [];
+    const intent = intents.find(item => {
+        if (!item || item.chatId !== chatId || item.type !== type || !item.expectedBody) {
+            return false;
+        }
+        if (now - Number(item.preparedAt || item.createdAt || 0) > SAVE_GENERATE_INTENT_TTL_MS) {
+            return false;
+        }
+
+        const expectedHash = item.expectedBodyHash || makeSaveGenerateRequestBodyHash(item.expectedBody);
+        item.expectedBodyHash = expectedHash;
+        return expectedHash === bodyHash;
+    });
+
+    if (!intent) {
+        return null;
+    }
+
+    return intent;
+}
+
+function cleanupSaveGenerateIntents(state) {
+    if (!state) {
+        return;
+    }
+
+    if (!Array.isArray(state.saveGenerateIntents)) {
+        state.saveGenerateIntents = [];
+        return;
+    }
+
+    const now = Date.now();
+    state.saveGenerateIntents = state.saveGenerateIntents.filter(intent => {
+        return intent
+            && now - Number(intent.createdAt || 0) <= SAVE_GENERATE_INTENT_TTL_MS;
+    });
+
+    if (state.saveGenerateIntents.length > SAVE_GENERATE_MAX_INTENTS) {
+        state.saveGenerateIntents = state.saveGenerateIntents.slice(-SAVE_GENERATE_MAX_INTENTS);
+    }
+}
+
+function isCurrentSaveGenerateChatTailReadyForAssistantReply() {
+    const tail = getCurrentSaveGenerateChatTailMessage();
+    return Boolean(tail?.message && tail.message.is_user === true);
+}
+
+function getCurrentSaveGenerateChatTailMessage() {
+    const messages = scriptModule.chat;
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return null;
+    }
+
+    let lastMessage = null;
+    let lastFloor = -1;
+    let floor = -1;
+    for (const message of messages) {
+        if (!message || message.chat_metadata) {
+            continue;
+        }
+        floor += 1;
+        lastMessage = message;
+        lastFloor = floor;
+    }
+
+    return lastMessage ? { message: lastMessage, floor: lastFloor } : null;
+}
+
+function makeSaveGenerateRequestBodyHash(body) {
+    const text = stringifySaveGenerateStableJson(body);
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return `r${text.length.toString(36)}:${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function stringifySaveGenerateStableJson(value) {
+    return JSON.stringify(normalizeSaveGenerateStableJson(value));
+}
+
+function normalizeSaveGenerateStableJson(value) {
+    if (!value || typeof value !== 'object') {
+        return value;
+    }
+
+    if (Array.isArray(value)) {
+        return value.map(item => normalizeSaveGenerateStableJson(item));
+    }
+
+    const output = {};
+    for (const key of Object.keys(value).sort()) {
+        const normalized = normalizeSaveGenerateStableJson(value[key]);
+        if (normalized !== undefined) {
+            output[key] = normalized;
+        }
+    }
+    return output;
 }
 
 function getCurrentSaveGenerateDescriptor(body = null) {
@@ -11217,10 +11523,12 @@ async function fetchSaveGenerate(state, requestInfo, input, init) {
     try {
         const response = await state.originalFetch(BAIBAOKU_SAVE_GENERATE_URL, fastInit);
         if (response?.status === 404) {
+            markSaveGenerateBackendAvailable(state, false);
             clearActiveSaveGenerateCancelTarget(state, cancelTarget);
             console.debug(`${LOG_PREFIX} save-generate endpoint unavailable; falling back to native generate`);
             return state.originalFetch(input, init);
         }
+        markSaveGenerateBackendAvailable(state, response?.ok || response?.status !== 404);
 
         const jobId = response?.headers?.get(SAVE_GENERATE_JOB_ID_HEADER) || '';
         if (cancelTarget) {
@@ -11450,7 +11758,7 @@ async function maybeHandleSaveGenerateSaveRequest(state, input, init) {
     });
     cleanupSaveGenerateRecords(state);
 
-    if (job && ['saved', 'already_saved'].includes(job.status)) {
+    if (job && isSaveGenerateChatAlreadySavedStatus(job)) {
         console.debug(`${LOG_PREFIX} save-generate saved ${record.save.file_name}; skipping native /api/chats/save`);
         markSaveGenerateJobSeen(job);
         return buildSkippedSaveGenerateSaveResponse(job);
@@ -11489,7 +11797,7 @@ function findMatchingSaveGenerateRecord(state, saveBody) {
 }
 
 async function waitSaveGenerateJobTerminal(state, record, { onUpdate = null } = {}) {
-    const terminal = new Set(['saved', 'already_saved', 'conflict', 'failed', 'canceled']);
+    const terminal = new Set(['completed', 'saved', 'already_saved', 'conflict', 'failed', 'canceled']);
     if (terminal.has(record.status)) {
         onUpdate?.({ id: record.id, status: record.status });
         return { id: record.id, status: record.status };
@@ -11721,6 +12029,11 @@ async function runCurrentSaveGenerateJobCheck(state, chatId, reason = 'unknown',
 
     state.resumeCheckInFlightChatId = chatId;
     try {
+        if (!await isSaveGenerateBackendAvailable(state)) {
+            console.debug(`${LOG_PREFIX} save-generate resume check skipped: BaiBaoKu backend is unavailable (${reason})`);
+            return null;
+        }
+
         const effectiveLastMessageHash = typeof lastMessageHash === 'string'
             ? lastMessageHash
             : getCurrentSaveGenerateLastMessageHash();
@@ -12040,24 +12353,8 @@ async function fetchSaveGenerateJobByChatId(fetchFn, chatId, lastMessageHash = '
 }
 
 function getCurrentSaveGenerateLastMessageHash() {
-    const messages = scriptModule.chat;
-    if (!Array.isArray(messages) || messages.length === 0) {
-        return '';
-    }
-
-    let lastMessage = null;
-    let lastFloor = -1;
-    let floor = -1;
-    for (const message of messages) {
-        if (!message || message.chat_metadata) {
-            continue;
-        }
-        floor += 1;
-        lastMessage = message;
-        lastFloor = floor;
-    }
-
-    return lastMessage ? makeSaveGenerateMessageContentHash(lastMessage.mes ?? '', lastFloor) : '';
+    const tail = getCurrentSaveGenerateChatTailMessage();
+    return tail?.message ? makeSaveGenerateMessageContentHash(tail.message.mes ?? '', tail.floor) : '';
 }
 
 function makeSaveGenerateMessageContentHash(value, floor) {
@@ -12579,15 +12876,37 @@ function isCurrentSaveGenerateMessageAlreadyInserted(job) {
         return false;
     }
 
+    const savedFloor = Number.isInteger(job.savedMessageFloor) ? job.savedMessageFloor : -1;
+    const tail = getCurrentSaveGenerateChatTailMessage();
+    if (tail?.message && Number.isInteger(savedFloor) && savedFloor >= 0 && tail.floor > savedFloor) {
+        return true;
+    }
+
     for (let index = messages.length - 1; index >= 0; index -= 1) {
         const message = messages[index];
         if (!message || message.chat_metadata) {
             continue;
         }
-        return message.is_user !== true && String(message.mes ?? '') === expectedText;
+        return message.is_user !== true
+            && isSaveGenerateTextIncludedInMessage(message.mes, expectedText);
     }
 
     return false;
+}
+
+function normalizeSaveGenerateComparableText(value) {
+    return String(value ?? '')
+        .replace(/^\uFEFF/, '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/\n?data:\s*\[DONE\]\s*$/i, '')
+        .trim();
+}
+
+function isSaveGenerateTextIncludedInMessage(messageText, jobText) {
+    const normalizedMessage = normalizeSaveGenerateComparableText(messageText);
+    const normalizedJobText = normalizeSaveGenerateComparableText(jobText);
+    return Boolean(normalizedJobText && normalizedMessage.includes(normalizedJobText));
 }
 
 function isSaveGenerateSendAsRecoverableType(type) {
@@ -12595,11 +12914,20 @@ function isSaveGenerateSendAsRecoverableType(type) {
 }
 
 function isSaveGenerateTerminalStatus(status) {
-    return ['saved', 'already_saved', 'conflict', 'failed', 'canceled'].includes(String(status || ''));
+    return ['completed', 'saved', 'already_saved', 'conflict', 'failed', 'canceled'].includes(String(status || ''));
 }
 
 function isSaveGenerateSavedStatus(status) {
-    return ['saved', 'already_saved'].includes(String(status || ''));
+    return ['completed', 'saved', 'already_saved'].includes(String(status || ''));
+}
+
+function isSaveGenerateChatAlreadySavedStatus(job) {
+    const status = String(job?.status || '');
+    if (!['saved', 'already_saved'].includes(status)) {
+        return false;
+    }
+
+    return job.chatSaved === true || job.chatSaved === undefined;
 }
 
 function getSaveGenerateSeenStorageKey(job) {
