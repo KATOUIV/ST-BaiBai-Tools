@@ -350,7 +350,6 @@ const defaultSettings = {
     presetGroupingEnabled: true,
     presetPromptCodeMirrorEditorEnabled: true,
     presetAutoSaveAfterPromptEditEnabled: false,
-    presetPromptGroups: {},
     regexQuickOperationOptimizationEnabled: true,
     regexListGroups: {},
     chatDeleteEditFlowOptimizationEnabled: true,

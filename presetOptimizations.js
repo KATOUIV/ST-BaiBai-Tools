@@ -19,6 +19,8 @@ const PRESET_SWITCH_BEFORE_HANDLER_KEY = '__baiBaiToolkitPresetSwitchBeforeHandl
 const PRESET_SWITCH_HANDLER_KEY = '__baiBaiToolkitPresetSwitchHandler';
 const PRESET_MODEL_CHANGE_HANDLER_KEY = '__baiBaiToolkitPresetModelChangeHandler';
 const PRESET_CHAT_LOADED_HANDLER_KEY = '__baiBaiToolkitPresetChatLoadedHandler';
+const PRESET_GROUP_PRESET_DELETED_HANDLER_KEY = '__baiBaiToolkitPresetGroupPresetDeletedHandler';
+const PRESET_GROUP_PRESET_IMPORT_HANDLER_KEY = '__baiBaiToolkitPresetGroupPresetImportHandler';
 const PRESET_SELECT_CHANGE_HANDLER_KEY = '__baiBaiToolkitPresetSelectChangeHandler';
 const PRESET_DELETE_HANDLER_KEY = '__baiBaiToolkitPresetDeleteHandler';
 const PRESET_LIST_ACTION_HANDLER_KEY = '__baiBaiToolkitPresetListActionHandler';
@@ -39,6 +41,7 @@ const PRESET_VUE_EXPAND_ANIMATION_MS = 180;
 const PRESET_VUE_COLLAPSE_ANIMATION_MS = 260;
 const PRESET_VUE_DRAG_ANIMATION_MS = 180;
 const PRESET_VUE_DROP_SAVE_DELAY_MS = 40;
+const PRESET_GROUP_COMPAT_CHOICE_RESULT_BASE = 1001;
 const PRESET_DRAG_LONG_PRESS_MS = 300;
 const PRESET_DRAG_CANCEL_DISTANCE_PX = 12;
 const PRESET_DRAG_CLICK_SUPPRESS_MS = 500;
@@ -96,6 +99,7 @@ let savePresetOptimizationSettings = null;
 
 export function configurePresetOptimizations(context = {}) {
     settings = context.settings ?? settings;
+    delete settings.presetPromptGroups;
     extensionState = context.extensionState ?? extensionState;
     LOG_PREFIX = context.logPrefix ?? LOG_PREFIX;
     loadCodeMirrorModules = context.loadCodeMirrorModules ?? loadCodeMirrorModules;
@@ -1711,78 +1715,71 @@ function renderPresetVueIcon(h, className, title) {
     return h('span', { class: className, title });
 }
 
-function getPresetPromptGroupsRoot() {
-    if (!settings.presetPromptGroups || typeof settings.presetPromptGroups !== 'object') {
-        settings.presetPromptGroups = {};
-    }
-
-    if (!settings.presetPromptGroups.scopes || typeof settings.presetPromptGroups.scopes !== 'object') {
-        settings.presetPromptGroups.scopes = {};
-    }
-
-    return settings.presetPromptGroups;
-}
-
-function getPresetPromptGroupScopeKey() {
-    const presetName = oai_settings?.preset_settings_openai || 'current';
-    return `openai::${presetName}`;
-}
-
-function clearEmptyPresetPromptGroupScope(scopeKey = getPresetPromptGroupScopeKey()) {
-    const root = getPresetPromptGroupsRoot();
-    const state = root.scopes?.[scopeKey];
-
-    if (!state || hasPresetPromptGroupStateData(state)) {
-        return false;
-    }
-
-    delete root.scopes[scopeKey];
-    return true;
-}
-
 function getPresetPromptGroupState() {
-    const root = getPresetPromptGroupsRoot();
-    const scopeKey = getPresetPromptGroupScopeKey();
+    const presetName = getPresetPromptGroupRuntimePresetName();
 
-    if (!root.scopes[scopeKey] || typeof root.scopes[scopeKey] !== 'object') {
-        root.scopes[scopeKey] = {};
+    if (
+        extensionState.presetPromptGroupRuntimePresetName !== presetName
+        || !extensionState.presetPromptGroupRuntimeState
+        || typeof extensionState.presetPromptGroupRuntimeState !== 'object'
+    ) {
+        const loaded = loadCurrentPresetPromptGroupStateFromPreset();
+        extensionState.presetPromptGroupRuntimePresetName = presetName;
+        extensionState.presetPromptGroupRuntimeState = loaded.state;
+
+        if (loaded.shouldPersist) {
+            savePresetPromptGroupSettings();
+        }
     }
 
-    const state = root.scopes[scopeKey];
-
-    if (!Array.isArray(state.groups)) {
-        state.groups = [];
-    }
-
-    if (!state.prompts || typeof state.prompts !== 'object') {
-        state.prompts = {};
-    }
-
-    hydratePresetPromptGroupStateFromPresetExtension(state);
-    return state;
+    return extensionState.presetPromptGroupRuntimeState;
 }
 
-function hydratePresetPromptGroupStateFromPresetExtension(state) {
-    if (hasPresetPromptGroupStateData(state)) {
-        return false;
-    }
+function getPresetPromptGroupRuntimePresetName() {
+    return oai_settings?.preset_settings_openai || 'current';
+}
 
+function createEmptyPresetPromptGroupState() {
+    return {
+        groups: [],
+        prompts: {},
+    };
+}
+
+function loadCurrentPresetPromptGroupStateFromPreset() {
     const validPromptIds = getCurrentPresetPromptOrderIds();
-    const importedState = readCurrentPresetPromptGroupExtensionState(validPromptIds)
-        ?? convertCompatEntryGroupingToPresetPromptGroupState(
-            readCurrentPresetExtensionField(PRESET_COMPAT_ENTRY_GROUPING_EXTENSION_PATH),
-            validPromptIds,
-        );
+    const importedState = readCurrentPresetPromptGroupExtensionState(validPromptIds);
 
-    if (!importedState || !hasPresetPromptGroupStateData(importedState)) {
-        return false;
+    if (importedState) {
+        return {
+            state: importedState,
+            shouldPersist: false,
+        };
     }
 
-    state.groups = importedState.groups;
-    state.prompts = importedState.prompts;
-    normalizePresetPromptGroupState(state, new Set(validPromptIds));
-    savePresetPromptGroupSettings();
-    return true;
+    const compatCandidates = getCompatPresetPromptGroupStateCandidates(validPromptIds);
+
+    if (compatCandidates.length > 1) {
+        schedulePresetPromptGroupCompatChoice(compatCandidates, validPromptIds);
+        return {
+            state: createEmptyPresetPromptGroupState(),
+            shouldPersist: false,
+        };
+    }
+
+    const compatCandidate = compatCandidates[0];
+
+    if (compatCandidate) {
+        return {
+            state: compatCandidate.state,
+            shouldPersist: true,
+        };
+    }
+
+    return {
+        state: createEmptyPresetPromptGroupState(),
+        shouldPersist: false,
+    };
 }
 
 function hasPresetPromptGroupStateData(state) {
@@ -1843,7 +1840,7 @@ function readCurrentPresetPromptGroupExtensionState(validPromptIds = getCurrentP
 
     const groupState = {
         groups: Array.isArray(value.groups)
-            ? structuredClone(value.groups).map(group => ({ ...group, collapsed: true }))
+            ? structuredClone(value.groups)
             : [],
         prompts: value.prompts && typeof value.prompts === 'object' ? structuredClone(value.prompts) : {},
     };
@@ -1852,8 +1849,47 @@ function readCurrentPresetPromptGroupExtensionState(validPromptIds = getCurrentP
     return hasPresetPromptGroupStateData(groupState) ? groupState : null;
 }
 
-function convertCompatEntryGroupingToPresetPromptGroupState(entryGrouping, promptIds = getCurrentPresetPromptOrderIds()) {
-    if (!Array.isArray(entryGrouping) || !promptIds.length) {
+function getCompatPresetPromptGroupStateCandidates(validPromptIds = getCurrentPresetPromptOrderIds()) {
+    const entryGrouping = readCurrentPresetExtensionField(PRESET_COMPAT_ENTRY_GROUPING_EXTENSION_PATH);
+
+    if (!entryGrouping || !validPromptIds.length) {
+        return [];
+    }
+
+    return [
+        {
+            formatName: t`起止范围格式`,
+            state: convertCompatEntryGroupingRangeToPresetPromptGroupState(entryGrouping, validPromptIds),
+        },
+        {
+            formatName: t`成员列表格式`,
+            state: convertCompatEntryGroupingMembersToPresetPromptGroupState(entryGrouping, validPromptIds),
+        },
+    ].filter(candidate => hasPresetPromptGroupStateData(candidate.state));
+}
+
+function getCompatEntryGroupingEntries(entryGrouping) {
+    if (Array.isArray(entryGrouping)) {
+        return entryGrouping;
+    }
+
+    if (!entryGrouping || typeof entryGrouping !== 'object') {
+        return [];
+    }
+
+    for (const key of ['groups', 'entries', 'entryGroups', 'items']) {
+        if (Array.isArray(entryGrouping[key])) {
+            return entryGrouping[key];
+        }
+    }
+
+    return [];
+}
+
+function convertCompatEntryGroupingRangeToPresetPromptGroupState(entryGrouping, promptIds = getCurrentPresetPromptOrderIds()) {
+    const entries = getCompatEntryGroupingEntries(entryGrouping);
+
+    if (!entries.length || !promptIds.length) {
         return null;
     }
 
@@ -1864,7 +1900,7 @@ function convertCompatEntryGroupingToPresetPromptGroupState(entryGrouping, promp
     };
     const assignedPromptIds = new Set();
 
-    for (const [index, entry] of entryGrouping.entries()) {
+    for (const [index, entry] of entries.entries()) {
         if (!entry || typeof entry !== 'object') {
             continue;
         }
@@ -1906,6 +1942,151 @@ function convertCompatEntryGroupingToPresetPromptGroupState(entryGrouping, promp
     return hasPresetPromptGroupStateData(groupState) ? groupState : null;
 }
 
+function convertCompatEntryGroupingMembersToPresetPromptGroupState(entryGrouping, promptIds = getCurrentPresetPromptOrderIds()) {
+    const entries = getCompatEntryGroupingEntries(entryGrouping);
+
+    if (!entries.length || !promptIds.length) {
+        return null;
+    }
+
+    const validPromptIds = new Set(promptIds);
+    const groupState = {
+        groups: [],
+        prompts: {},
+    };
+    const assignedPromptIds = new Set();
+
+    for (const [index, entry] of entries.entries()) {
+        if (!entry || typeof entry !== 'object' || !Array.isArray(entry.memberIdentifiers)) {
+            continue;
+        }
+
+        const memberIds = entry.memberIdentifiers
+            .map(identifier => String(identifier || ''))
+            .filter(identifier => validPromptIds.has(identifier) && !assignedPromptIds.has(identifier));
+
+        if (!memberIds.length) {
+            continue;
+        }
+
+        const memberIdSet = new Set(memberIds);
+        const groupId = String(entry.id || uuidv4());
+        groupState.groups.push({
+            id: groupId,
+            name: String(entry.name || t`未命名分组`),
+            order: index,
+            collapsed: true,
+        });
+
+        for (const promptId of promptIds) {
+            if (!memberIdSet.has(promptId)) {
+                continue;
+            }
+
+            assignedPromptIds.add(promptId);
+            groupState.prompts[promptId] = { groupId };
+        }
+    }
+
+    normalizePresetPromptGroupState(groupState, validPromptIds);
+    return hasPresetPromptGroupStateData(groupState) ? groupState : null;
+}
+
+function schedulePresetPromptGroupCompatChoice(candidates, validPromptIds = getCurrentPresetPromptOrderIds()) {
+    const presetName = getPresetPromptGroupRuntimePresetName();
+    const choiceKey = getPresetPromptGroupCompatChoiceKey(presetName, candidates, validPromptIds);
+
+    if (
+        extensionState.presetPromptGroupCompatChoicePendingKey === choiceKey
+        || extensionState.presetPromptGroupCompatChoiceDismissedKey === choiceKey
+    ) {
+        return false;
+    }
+
+    extensionState.presetPromptGroupCompatChoicePendingKey = choiceKey;
+    void choosePresetPromptGroupCompatCandidate(candidates, validPromptIds, presetName, choiceKey);
+    return true;
+}
+
+function getPresetPromptGroupCompatChoiceKey(presetName, candidates, validPromptIds) {
+    const candidateKey = candidates
+        .map(candidate => {
+            const groupNames = candidate.state.groups.map(group => group.name).join(',');
+            return `${candidate.formatName}:${candidate.state.groups.length}:${Object.keys(candidate.state.prompts).length}:${groupNames}`;
+        })
+        .join('|');
+
+    return `${presetName}:${validPromptIds.length}:${candidateKey}`;
+}
+
+async function choosePresetPromptGroupCompatCandidate(candidates, validPromptIds, presetName, choiceKey) {
+    try {
+        const popupResult = await callGenericPopup(
+            renderPresetPromptGroupCompatChoicePopup(candidates),
+            POPUP_TYPE.TEXT,
+            '',
+            {
+                okButton: false,
+                cancelButton: t`取消`,
+                allowVerticalScrolling: true,
+                wider: true,
+                customButtons: candidates.map((candidate, index) => ({
+                    text: t`使用分组${getPresetPromptGroupCompatChoiceLetter(index)}`,
+                    result: PRESET_GROUP_COMPAT_CHOICE_RESULT_BASE + index,
+                    tooltip: candidate.formatName,
+                })),
+            },
+        );
+        const selectedIndex = Number(popupResult) - PRESET_GROUP_COMPAT_CHOICE_RESULT_BASE;
+        const selectedCandidate = candidates[selectedIndex];
+
+        if (!selectedCandidate) {
+            extensionState.presetPromptGroupCompatChoiceDismissedKey = choiceKey;
+            return;
+        }
+
+        if (getPresetPromptGroupRuntimePresetName() !== presetName) {
+            return;
+        }
+
+        extensionState.presetPromptGroupRuntimePresetName = presetName;
+        extensionState.presetPromptGroupRuntimeState = selectedCandidate.state;
+        normalizePresetPromptGroupState(extensionState.presetPromptGroupRuntimeState, new Set(validPromptIds));
+        savePresetPromptGroupSettings();
+        syncPresetVuePromptListManagerState();
+    } finally {
+        if (extensionState.presetPromptGroupCompatChoicePendingKey === choiceKey) {
+            delete extensionState.presetPromptGroupCompatChoicePendingKey;
+        }
+    }
+}
+
+function renderPresetPromptGroupCompatChoicePopup(candidates) {
+    const lines = candidates
+        .map((candidate, index) => {
+            const letter = getPresetPromptGroupCompatChoiceLetter(index);
+            const groups = candidate.state.groups ?? [];
+            const groupNames = groups.map(group => group.name).filter(Boolean);
+            const previewNames = groupNames.slice(0, 6).map(name => escapeHtml(name));
+            const suffix = groupNames.length > previewNames.length ? '...' : '';
+            const preview = [...previewNames, suffix].filter(Boolean).join('、') || t`无`;
+
+            return `<p><strong>${t`分组`}${letter}</strong>${t`有${groups.length}个分组`}：${preview}</p>`;
+        })
+        .join('');
+
+    return `
+        <div class="bai-bai-preset-group-import-choice">
+            <p>${t`检测到当前预设同时包含两种可兼容的分组格式，请选择要导入的分组。`}</p>
+            ${lines}
+        </div>
+    `;
+}
+
+function getPresetPromptGroupCompatChoiceLetter(index) {
+    return String.fromCharCode(65 + index);
+}
+
 function getCurrentPresetPromptOrderIds() {
     return (promptManager?.getPromptOrderForCharacter?.(promptManager.activeCharacter) ?? [])
         .map(entry => entry?.identifier)
@@ -1915,11 +2096,6 @@ function getCurrentPresetPromptOrderIds() {
 function readCurrentPresetExtensionField(path) {
     const presetName = oai_settings?.preset_settings_openai;
     const presetManager = getPresetManager('openai');
-    const settingsValue = getObjectPath(oai_settings?.extensions, path);
-
-    if (settingsValue !== null && settingsValue !== undefined) {
-        return settingsValue;
-    }
 
     if (presetManager && presetName) {
         const preset = presetManager.getCompletionPresetByName?.(presetName);
@@ -1928,6 +2104,12 @@ function readCurrentPresetExtensionField(path) {
         if (presetValue !== null && presetValue !== undefined) {
             return presetValue;
         }
+    }
+
+    const settingsValue = getObjectPath(oai_settings?.extensions, path);
+
+    if (settingsValue !== null && settingsValue !== undefined) {
+        return settingsValue;
     }
 
     return null;
@@ -1966,14 +2148,7 @@ function setObjectPath(target, path, value) {
 }
 
 function savePresetPromptGroupSettings() {
-    getPresetPromptGroupsRoot();
     syncCurrentPresetPromptGroupStateToPresetExtensionField();
-
-    if (typeof savePresetOptimizationSettings === 'function') {
-        savePresetOptimizationSettings();
-    } else {
-        saveSettingsDebounced();
-    }
 }
 
 function syncCurrentPresetPromptGroupStateToPresetExtensionField({ force = false } = {}) {
@@ -3353,6 +3528,8 @@ function applyPresetSwitchOptimization() {
     applyPresetSelectChangeDeferral();
     applyPresetDeleteSelectionOptimization();
     applyPresetListActionDelegation();
+    applyPresetGroupDeletedCleanup();
+    applyPresetGroupImportCleanup();
     applyPresetSwitchBeforeOptimization();
     applyPresetModelChangeTokenRefreshOptimization();
     applyPresetChatLoadedTokenRefreshOptimization();
@@ -3372,6 +3549,68 @@ function applyPresetSwitchOptimization() {
     } else {
         eventSource.on(event_types.OAI_PRESET_CHANGED_AFTER, handler);
     }
+}
+
+function applyPresetGroupDeletedCleanup() {
+    if (extensionState[PRESET_GROUP_PRESET_DELETED_HANDLER_KEY]) {
+        return;
+    }
+
+    const handler = (event) => {
+        if (event?.apiId !== 'openai' || !event?.name) {
+            return;
+        }
+
+        resetPresetPromptGroupRuntimeState(event.name);
+    };
+
+    extensionState[PRESET_GROUP_PRESET_DELETED_HANDLER_KEY] = handler;
+    eventSource.on(event_types.PRESET_DELETED, handler);
+}
+
+function applyPresetGroupImportCleanup() {
+    if (extensionState[PRESET_GROUP_PRESET_IMPORT_HANDLER_KEY]) {
+        return;
+    }
+
+    const handler = (event) => {
+        const presetName = event?.presetName;
+
+        if (!presetName) {
+            return;
+        }
+
+        collapseImportedPresetPromptGroups(event?.data);
+        resetPresetPromptGroupRuntimeState(presetName);
+    };
+
+    extensionState[PRESET_GROUP_PRESET_IMPORT_HANDLER_KEY] = handler;
+    eventSource.on(event_types.OAI_PRESET_IMPORT_READY, handler);
+}
+
+function collapseImportedPresetPromptGroups(presetData) {
+    const groups = getObjectPath(presetData?.extensions, PRESET_GROUP_EXTENSION_PATH)?.groups;
+
+    if (!Array.isArray(groups)) {
+        return false;
+    }
+
+    for (const group of groups) {
+        if (group && typeof group === 'object') {
+            group.collapsed = true;
+        }
+    }
+
+    return true;
+}
+
+function resetPresetPromptGroupRuntimeState(presetName = null) {
+    if (presetName && extensionState.presetPromptGroupRuntimePresetName !== presetName) {
+        return;
+    }
+
+    delete extensionState.presetPromptGroupRuntimePresetName;
+    delete extensionState.presetPromptGroupRuntimeState;
 }
 
 function applyPresetModelChangeTokenRefreshOptimization() {
@@ -3656,7 +3895,6 @@ function handlePresetListActionClick(event) {
 
 async function handleOpenAiPresetChangedBefore(event) {
     extensionState.openAiPresetSwitchEarlyRendered = false;
-    clearEmptyPresetPromptGroupScope(`openai::${event?.presetName ?? oai_settings?.preset_settings_openai ?? 'current'}`);
 
     if (!settings.presetSwitchOptimizationEnabled || !isPromptManagerReadyForFastPresetSwitch()) {
         return;
@@ -3681,8 +3919,6 @@ async function handleOpenAiPresetChangedBefore(event) {
 }
 
 async function handleOpenAiPresetChangedAfter() {
-    clearEmptyPresetPromptGroupScope();
-
     if (!settings.presetSwitchOptimizationEnabled || !isPromptManagerReadyForFastPresetSwitch()) {
         if (isPresetGroupingEnabled()) {
             syncPresetVuePromptListManagerState();
@@ -3727,6 +3963,10 @@ function applyPromptManagerPresetFieldsEarly(preset) {
     if (Array.isArray(preset.prompt_order)) {
         oai_settings.prompt_order = structuredClone(preset.prompt_order);
     }
+
+    oai_settings.extensions = preset.extensions && typeof preset.extensions === 'object'
+        ? structuredClone(preset.extensions)
+        : {};
 
     promptManager.serviceSettings = oai_settings;
     promptManager.sanitizeServiceSettings?.();
