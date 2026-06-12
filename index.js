@@ -349,6 +349,7 @@ const defaultSettings = {
     presetToggleOptimizationEnabled: true,
     presetPromptCodeMirrorEditorEnabled: true,
     presetAutoSaveAfterPromptEditEnabled: false,
+    presetPromptGroups: {},
     regexQuickOperationOptimizationEnabled: true,
     regexListGroups: {},
     chatDeleteEditFlowOptimizationEnabled: true,
@@ -386,6 +387,7 @@ presetOptimizations.configurePresetOptimizations({
     logPrefix: LOG_PREFIX,
     loadCodeMirrorModules: loadDescriptionCodeMirrorModules,
     codeMirrorHistoryMaxLength: DESCRIPTION_CODEMIRROR_HISTORY_MAX_LENGTH,
+    saveSettings: saveExtensionSettings,
 });
 presetOptimizations.installOpenAITokenizerBulkBridge();
 
