@@ -1,4 +1,4 @@
-import { event_types, eventSource, getRequestHeaders, saveSettings, saveSettingsDebounced } from '../../../../script.js';
+import { event_types, eventSource, getRequestHeaders, saveSettings } from '../../../../script.js';
 import { getChatCompletionPreset, oai_settings, openai_setting_names, openai_settings, promptManager } from '../../../openai.js';
 import { getPresetManager } from '../../../preset-manager.js';
 import { getTokenizerModel } from '../../../tokenizers.js';
@@ -4582,12 +4582,16 @@ function setObjectPath(target, path, value) {
     cursor[parts[parts.length - 1]] = value;
 }
 
-function savePresetPromptGroupSettings({ immediate = false, force = false } = {}) {
+function savePresetPromptGroupSettings({ force = false } = {}) {
     const payload = getCurrentPresetPromptGroupExtensionPayload();
-    const changed = syncCurrentPresetPromptGroupStateToPresetExtensionField({ force, persist: immediate, payload });
+    const changed = syncCurrentPresetPromptGroupStateToPresetExtensionField({ force, persist: false, payload });
 
-    if (changed && !immediate) {
+    if (changed) {
         markPresetPromptGroupSettingsSavePending(payload);
+    }
+
+    if (changed) {
+        syncCurrentOpenAiPresetCacheFromSettings(payload?.presetName);
     }
 
     return changed;
@@ -4658,26 +4662,10 @@ function syncCurrentPresetPromptGroupStateToPresetExtensionField({ force = false
 
     applyPresetPromptGroupExtensionPayloadToMemory(payload);
 
-    if (!persist) {
-        return true;
+    if (persist) {
+        extensionState.presetPromptGroupExtensionSyncKey = payload.syncKey;
     }
 
-    extensionState.presetPromptGroupExtensionSyncKey = payload.syncKey;
-
-    if (!payload.presetManager) {
-        return false;
-    }
-
-    void payload.presetManager.writePresetExtensionField({
-        name: payload.presetName,
-        path: PRESET_GROUP_EXTENSION_PATH,
-        value: payload.groupState,
-    }).catch(error => {
-        if (extensionState.presetPromptGroupExtensionSyncKey === payload.syncKey) {
-            delete extensionState.presetPromptGroupExtensionSyncKey;
-        }
-        console.debug(`${LOG_PREFIX} Failed to save preset prompt groups to preset extension field`, error);
-    });
     return true;
 }
 
@@ -4694,24 +4682,11 @@ async function flushCurrentPresetPromptGroupSettings({ force = false } = {}) {
 
     applyPresetPromptGroupExtensionPayloadToMemory(payload);
     extensionState.presetPromptGroupExtensionSyncKey = payload.syncKey;
+    syncCurrentOpenAiPresetCacheFromSettings(payload.presetName);
+    markOpenAiPresetSavePending(payload.presetName);
+    await saveSettings();
 
-    if (!payload.presetManager) {
-        return false;
-    }
-
-    try {
-        await payload.presetManager.writePresetExtensionField({
-            name: payload.presetName,
-            path: PRESET_GROUP_EXTENSION_PATH,
-            value: payload.groupState,
-        });
-        return true;
-    } catch (error) {
-        if (extensionState.presetPromptGroupExtensionSyncKey === payload.syncKey) {
-            delete extensionState.presetPromptGroupExtensionSyncKey;
-        }
-        throw error;
-    }
+    return true;
 }
 
 function getSerializableCurrentPresetPromptGroupState(promptIds = getCurrentPresetPromptOrderIds()) {
@@ -5084,11 +5059,8 @@ function togglePresetVuePromptGroupEnabled(groupId) {
         }
     }
 
-    void Promise.resolve(promptManager.saveServiceSettings?.())
-        .then(() => markOpenAiPresetSavePending())
-        .catch(error => {
-            console.debug(`${LOG_PREFIX} Failed to save preset prompt group toggle state`, error);
-        });
+    markPresetPromptServiceSettingsSavePending();
+    markOpenAiPresetSavePending();
 
     refreshPromptManagerTokensDebounced();
 }
@@ -5267,8 +5239,12 @@ function renderPresetPromptActionButtonHtml({ action, icon, text, caution = fals
 function schedulePresetVuePromptOrderSaveAfterDrop() {
     const manager = getPresetVuePromptListManagerState();
     clearPresetVuePromptOrderSaveSchedule(manager);
-    manager.pendingOrderSave = true;
-    markPresetPromptChangesSavePending();
+    void Promise.resolve(savePresetVuePromptOrderFromModel())
+        .catch(error => {
+            manager.pendingOrderSave = true;
+            markPresetPromptChangesSavePending();
+            console.debug(`${LOG_PREFIX} Failed to sync preset prompt order after drop`, error);
+        });
 }
 
 function clearPresetVuePromptOrderSaveSchedule(manager = getPresetVuePromptListManagerState()) {
@@ -5335,6 +5311,7 @@ function markOpenAiPresetSavePending(presetName = oai_settings?.preset_settings_
         return;
     }
 
+    syncCurrentOpenAiPresetCacheFromSettings(presetName);
     getPendingOpenAiPresetSaves().add(presetName);
 }
 
@@ -5348,6 +5325,7 @@ function markPresetPromptServiceSettingsSavePending() {
 
     getPendingPresetPromptServiceSaves(manager).set(entry.presetName, entry);
     manager.pendingServiceSettingsSave = true;
+    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
     markPresetPromptChangesSavePending();
 }
 
@@ -5685,16 +5663,43 @@ async function flushPendingPresetPromptChanges({ includeOpenAiPresetSaves = fals
                 manager.pendingOpenAiPresetSaves = new Set();
             }
 
+            const presetNamesNeedingPresetSave = new Set(pendingPresetSaves);
+            let shouldSaveSettingsOnly = false;
+
             for (const entry of pendingServiceSaves) {
-                await flushPendingPresetPromptServiceSave(entry);
+                if (applyPendingPresetPromptServiceSaveToMemory(entry)) {
+                    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
+                    presetNamesNeedingPresetSave.add(entry.presetName);
+                    shouldSaveSettingsOnly = true;
+                }
             }
 
             for (const entry of pendingGroupSaves) {
-                await flushPendingPresetPromptGroupSave(entry);
+                if (applyPendingPresetPromptGroupSaveToMemory(entry)) {
+                    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
+                    presetNamesNeedingPresetSave.add(entry.presetName);
+                    shouldSaveSettingsOnly = true;
+                }
             }
 
-            for (const presetName of pendingPresetSaves) {
-                await flushPendingOpenAiPresetSave(presetName);
+            if ((shouldSaveServiceSettings || shouldSaveGroups) && !presetNamesNeedingPresetSave.size) {
+                syncCurrentOpenAiPresetCacheFromSettings();
+                presetNamesNeedingPresetSave.add(oai_settings?.preset_settings_openai);
+                shouldSaveSettingsOnly = true;
+            }
+
+            if (includeOpenAiPresetSaves) {
+                for (const presetName of presetNamesNeedingPresetSave) {
+                    await flushPendingOpenAiPresetSave(presetName);
+                }
+            } else if (shouldSaveSettingsOnly) {
+                for (const presetName of presetNamesNeedingPresetSave) {
+                    if (presetName) {
+                        getPendingOpenAiPresetSaves(manager).add(presetName);
+                    }
+                }
+
+                await saveSettings();
             }
         } catch (error) {
             manager.pendingServiceSettingsSave = manager.pendingServiceSettingsSave || shouldSaveServiceSettings;
@@ -5747,57 +5752,23 @@ async function flushPendingOpenAiPresetSave(presetName) {
 }
 
 async function flushPendingPresetPromptServiceSave(entry) {
-    if (!entry?.presetName || !entry.promptOrder) {
+    if (!applyPendingPresetPromptServiceSaveToMemory(entry)) {
         return;
     }
 
-    const presetManager = getPresetManager('openai');
-    const preset = presetManager?.getCompletionPresetByName?.(entry.presetName);
-
-    if (preset) {
-        preset.prompt_order = structuredClone(entry.promptOrder);
-        await presetManager.savePreset(entry.presetName, preset, { skipUpdate: true });
-    }
-
-    if (oai_settings?.preset_settings_openai === entry.presetName && typeof promptManager?.saveServiceSettings === 'function') {
-        oai_settings.prompt_order = structuredClone(entry.promptOrder);
-        promptManager.serviceSettings = oai_settings;
-        await Promise.resolve(promptManager.saveServiceSettings());
-    }
+    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
+    markOpenAiPresetSavePending(entry.presetName);
+    await saveSettings();
 }
 
 async function flushPendingPresetPromptGroupSave(entry) {
-    if (!entry?.presetName || !entry.groupState) {
+    if (!applyPendingPresetPromptGroupSaveToMemory(entry)) {
         return;
     }
 
-    const presetManager = getPresetManager('openai');
-    const payload = {
-        presetName: entry.presetName,
-        presetManager,
-        groupState: structuredClone(entry.groupState),
-        syncKey: entry.syncKey || `${entry.presetName}:${JSON.stringify(entry.groupState)}`,
-    };
-
-    applyPresetPromptGroupExtensionPayloadToMemory(payload);
-    extensionState.presetPromptGroupExtensionSyncKey = payload.syncKey;
-
-    if (!presetManager) {
-        return;
-    }
-
-    try {
-        await presetManager.writePresetExtensionField({
-            name: payload.presetName,
-            path: PRESET_GROUP_EXTENSION_PATH,
-            value: payload.groupState,
-        });
-    } catch (error) {
-        if (extensionState.presetPromptGroupExtensionSyncKey === payload.syncKey) {
-            delete extensionState.presetPromptGroupExtensionSyncKey;
-        }
-        throw error;
-    }
+    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
+    markOpenAiPresetSavePending(entry.presetName);
+    await saveSettings();
 }
 
 async function savePresetVuePromptOrderFromModel() {
@@ -5818,6 +5789,7 @@ async function savePresetVuePromptOrderFromModel() {
 
     if (areStringArraysEqual(beforeOrder, afterOrder)) {
         savePresetVuePromptGroupAssignments(nextAssignments);
+        syncCurrentOpenAiPresetCacheFromSettings();
         return;
     }
 
@@ -5832,6 +5804,7 @@ async function savePresetVuePromptOrderFromModel() {
     savePresetVuePromptGroupAssignments(nextAssignments, { persist: false });
     markPresetPromptServiceSettingsSavePending();
     savePresetPromptGroupSettings();
+    syncCurrentOpenAiPresetCacheFromSettings();
 }
 
 function getPresetVuePromptGroupAssignmentsFromModel(model) {
@@ -7089,7 +7062,7 @@ async function deleteOpenAiPresetSelectingNext() {
         await eventSource.emit(event_types.PRESET_DELETED, { apiId: 'openai', name: nameToDelete });
     }
 
-    saveSettingsDebounced();
+    await saveSettings();
 }
 
 function escapeCssSelectorValue(value) {
@@ -7173,7 +7146,8 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
         }
     }
 
-    const handler = presetAction === 'delete' || action.classList.contains('prompt-manager-detach-action')
+    const isDetachAction = presetAction === 'delete' || action.classList.contains('prompt-manager-detach-action');
+    const handler = isDetachAction
         ? promptManager?.handleDetach
         : presetAction === 'inspect' || action.classList.contains('prompt-manager-inspect-action')
             ? promptManager?.handleInspect
@@ -7188,11 +7162,25 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
     event.stopImmediatePropagation?.();
     closePresetPromptActionMenus();
 
+    const originalSaveServiceSettings = promptManager.saveServiceSettings;
+
     try {
+        if (isDetachAction && typeof originalSaveServiceSettings === 'function') {
+            promptManager.saveServiceSettings = () => Promise.resolve();
+        }
+
         handler.call(promptManager, event);
+        if (isDetachAction) {
+            markPresetPromptServiceSettingsSavePending();
+            markOpenAiPresetSavePending();
+        }
         schedulePresetPromptCodeMirrorEditorRefresh(undefined, { forceFromSource: true });
     } catch (error) {
         console.debug(`${LOG_PREFIX} Failed to handle prompt manager list action`, error);
+    } finally {
+        if (isDetachAction && typeof originalSaveServiceSettings === 'function') {
+            promptManager.saveServiceSettings = originalSaveServiceSettings;
+        }
     }
 }
 
@@ -7290,10 +7278,10 @@ async function copyPresetPromptEntry(promptId) {
 
     promptManager.log?.(`Copied prompt: ${promptId} -> ${copyId}.`);
     refreshPresetPromptListAfterCopy();
+    markOpenAiPresetSavePending();
 
     try {
-        await Promise.resolve(promptManager.saveServiceSettings?.());
-        saveOpenAiPresetAfterPromptEdit();
+        await saveOpenAiPresetAfterPromptEdit();
         toastr.success(t`已复制预设条目。`);
         refreshPromptManagerTokensDebounced();
         return true;
@@ -7751,11 +7739,8 @@ function handlePresetPromptToggleClick(event) {
     updatePromptToggleRow(row, toggle, promptOrderEntry.enabled);
     updatePresetVuePromptItemEnabled(promptId, promptOrderEntry.enabled);
     updatePromptTokenCell(row, null);
-    void Promise.resolve(promptManager.saveServiceSettings?.())
-        .then(() => markOpenAiPresetSavePending())
-        .catch(error => {
-            console.debug(`${LOG_PREFIX} Failed to save prompt toggle state`, error);
-        });
+    markPresetPromptServiceSettingsSavePending();
+    markOpenAiPresetSavePending();
 
     refreshPromptManagerTokensDebounced();
 }
@@ -7788,13 +7773,13 @@ function handlePresetPromptSaveClick(event) {
     event.stopImmediatePropagation();
 
     promptManager.updatePromptWithPromptEditForm(prompt);
+    markOpenAiPresetSavePending();
     updateQuickEditPrompt(promptId, prompt);
     updatePromptManagerRowFromPrompt(prompt);
     promptManager.hidePopup?.();
     promptManager.clearEditForm?.();
 
-    void Promise.resolve(promptManager.saveServiceSettings?.())
-        .then(saveOpenAiPresetAfterPromptEdit)
+    void saveOpenAiPresetAfterPromptEdit({ allowPresetAutoSave: true })
         .catch(error => {
             console.debug(`${LOG_PREFIX} Failed to save prompt edits`, error);
         });
@@ -7803,31 +7788,23 @@ function handlePresetPromptSaveClick(event) {
 }
 
 function scheduleOpenAiPresetSaveAfterPromptEdit() {
-    if (!settings.presetAutoSaveAfterPromptEditEnabled) {
-        setTimeout(() => markOpenAiPresetSavePending(), 0);
-        return;
-    }
-
     setTimeout(() => {
-        void Promise.resolve(promptManager?.saveServiceSettings?.())
-            .then(saveOpenAiPresetAfterPromptEdit)
+        void saveOpenAiPresetAfterPromptEdit({ allowPresetAutoSave: true })
             .catch(error => {
                 console.debug(`${LOG_PREFIX} Failed to prepare prompt edit preset save`, error);
             });
     }, 0);
 }
 
-async function saveOpenAiPresetAfterPromptEdit() {
-    if (!settings.presetAutoSaveAfterPromptEditEnabled) {
-        markOpenAiPresetSavePending();
+async function saveOpenAiPresetAfterPromptEdit({ allowPresetAutoSave = false } = {}) {
+    markPresetPromptServiceSettingsSavePending();
+    markOpenAiPresetSavePending();
+
+    if (!allowPresetAutoSave || !settings.presetAutoSaveAfterPromptEditEnabled) {
         return false;
     }
 
-    getPendingOpenAiPresetSaves().delete(oai_settings?.preset_settings_openai);
-    await flushPendingPresetPromptChanges();
-    await triggerOpenAiPresetUpdateAndWait();
-    await saveSettings();
-    clearPendingPresetPromptChanges();
+    await flushPendingPresetPromptChanges({ includeOpenAiPresetSaves: true });
     return true;
 }
 
