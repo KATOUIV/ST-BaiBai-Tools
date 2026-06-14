@@ -11,8 +11,10 @@ import { debounce, escapeHtml, getStringHash, uuidv4 } from '../../../utils.js';
 
 const PRESET_PROMPT_CODEMIRROR_EDITOR_KEY = '__baiBaiToolkitPresetPromptCodeMirrorEditor';
 const PRESET_PROMPT_CODEMIRROR_EDITOR_STYLE_ID = 'bai_bai_toolkit_preset_prompt_codemirror_editor_style';
+const PRESET_BACKUP_PREVIEW_UI_STYLE_ID = 'bai_bai_toolkit_preset_backup_preview_ui_style';
 const PRESET_SCROLL_STYLE_ID = 'bai_bai_toolkit_preset_scroll_style';
 const PRESET_DRAG_STYLE_ID = 'bai_bai_toolkit_preset_drag_style';
+const PRESET_BACKUP_PREVIEW_UI_KEY = '__baiBaiToolkitPresetBackupPreviewUi';
 const PRESET_DRAG_HANDLER_KEY = '__baiBaiToolkitPresetDragHandler';
 const PRESET_DRAG_PATCH_KEY = '__baiBaiToolkitPresetDragPatch';
 const PRESET_SWITCH_BEFORE_HANDLER_KEY = '__baiBaiToolkitPresetSwitchBeforeHandler';
@@ -70,6 +72,9 @@ const OPENAI_PRESET_SELECT_SELECTOR = '#settings_preset_openai';
 const OPENAI_PRESET_DELETE_SELECTOR = '#delete_oai_preset';
 const OPENAI_PRESET_UPDATE_SELECTOR = '#update_oai_preset';
 const OPENAI_PRESET_EXPORT_SELECTOR = '#export_oai_preset';
+const OPENAI_SETTINGS_SELECTOR = '#openai_settings';
+const PRESET_BACKUP_PREVIEW_UI_ID = 'bai_bai_toolkit_preset_backup_preview';
+const PRESET_BACKUP_PREVIEW_CLOSING_CLASS = 'bai-bai-preset-backup-closing';
 const PRESET_PROMPT_MANAGER_LIST_SELECTOR = '#completion_prompt_manager_list';
 const PRESET_VUE_GROUP_DROP_SURFACE_SELECTOR = `${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-body, ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-body-inner, ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-list`;
 const PRESET_PROMPT_MANAGER_SAVE_SELECTOR = '#completion_prompt_manager_popup_entry_form_save';
@@ -87,6 +92,7 @@ const PRESET_DRAG_INTERACTIVE_SELECTOR = '.prompt_manager_prompt_controls, .bai-
 const BAIBAOKU_TOKENIZER_BULK_COUNT_URL = '/api/plugins/baibaoku/v1/tokenizers/bulk-count';
 const OPENAI_TOKENIZER_BULK_BRIDGE_KEY = '__baibaokuTokenizerBulkBridge';
 const OPENAI_TOKENIZER_BULK_CACHE_LIMIT = 5000;
+const PRESET_BACKUP_PREVIEW_LIST_URL = '/api/plugins/baibaoku/v1/preset-backups/save/list';
 const PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS = 2000;
 const PRESET_DRAG_READY_CLASS = 'bai-bai-toolkit-preset-drag-ready';
 const PRESET_DRAG_ACTIVE_CLASS = 'bai-bai-toolkit-preset-drag-active';
@@ -112,6 +118,9 @@ const FORCE_TOGGLE_PROMPTS = new Set([
     'chatHistory',
     'dialogueExamples',
 ]);
+
+const PRESET_BACKUP_PREVIEW_PAGE_SIZE = 5;
+const PRESET_BACKUP_PREVIEW_EXPAND_ANIMATION_MS = 180;
 
 let settings = {};
 let extensionState = {};
@@ -254,6 +263,742 @@ function dispatchDescriptionEditorSourceInput(source) {
     event ||= new Event('input', { bubbles: true });
 
     source.dispatchEvent(event);
+}
+
+function applyPresetBackupPreviewUi() {
+    applyPresetBackupPreviewUiStyle();
+    insertPresetBackupPreviewUi();
+    installPresetBackupPreviewUiObserver();
+}
+
+function insertPresetBackupPreviewUi() {
+    const target = document.querySelector(OPENAI_SETTINGS_SELECTOR);
+
+    if (!(target instanceof HTMLElement) || !target.parentElement) {
+        return false;
+    }
+
+    let host = document.getElementById(PRESET_BACKUP_PREVIEW_UI_ID);
+
+    if (!(host instanceof HTMLElement)) {
+        host = document.createElement('div');
+        host.id = PRESET_BACKUP_PREVIEW_UI_ID;
+        host.className = 'bai-bai-preset-backup-preview';
+        host.innerHTML = renderPresetBackupPreviewUiHtml();
+        bindPresetBackupPreviewUi(host);
+        host.dataset.presetBackupPage = '1';
+        filterPresetBackupPreviewItems(host);
+    }
+
+    if (host.nextElementSibling !== target || host.parentElement !== target.parentElement) {
+        target.parentElement.insertBefore(host, target);
+    }
+
+    return true;
+}
+
+function installPresetBackupPreviewUiObserver() {
+    if (extensionState[PRESET_BACKUP_PREVIEW_UI_KEY] || typeof MutationObserver !== 'function' || !document.body) {
+        return;
+    }
+
+    const state = { observer: null, pending: false };
+    const sync = () => {
+        state.pending = false;
+        insertPresetBackupPreviewUi();
+    };
+    const scheduleSync = () => {
+        if (state.pending) {
+            return;
+        }
+
+        state.pending = true;
+
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(sync);
+        } else {
+            setTimeout(sync, 0);
+        }
+    };
+    const observer = new MutationObserver(scheduleSync);
+
+    state.observer = observer;
+
+    observer.observe(document.body, { childList: true, subtree: true });
+    extensionState[PRESET_BACKUP_PREVIEW_UI_KEY] = state;
+}
+
+function bindPresetBackupPreviewUi(host) {
+    host.addEventListener('input', event => {
+        const target = getPresetBackupPreviewSearchInputFromEvent(event);
+
+        if (!target) {
+            return;
+        }
+
+        if (event.isComposing || target.dataset.presetBackupComposing === 'true') {
+            return;
+        }
+
+        applyPresetBackupPreviewSearchFilter(host);
+    });
+
+    host.addEventListener('compositionstart', event => {
+        const target = getPresetBackupPreviewSearchInputFromEvent(event);
+
+        if (target) {
+            target.dataset.presetBackupComposing = 'true';
+        }
+    });
+
+    host.addEventListener('compositionend', event => {
+        const target = getPresetBackupPreviewSearchInputFromEvent(event);
+
+        if (!target) {
+            return;
+        }
+
+        delete target.dataset.presetBackupComposing;
+
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => applyPresetBackupPreviewSearchFilter(host));
+        } else {
+            setTimeout(() => applyPresetBackupPreviewSearchFilter(host), 0);
+        }
+    });
+
+    host.addEventListener('click', event => {
+        const actionTarget = event.target instanceof Element
+            ? event.target.closest('[data-preset-backup-action]')
+            : null;
+
+        if (actionTarget instanceof HTMLButtonElement) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            handlePresetBackupPreviewAction(host, actionTarget);
+            return;
+        }
+
+        const summary = event.target instanceof Element
+            ? event.target.closest('.bai-bai-preset-backup-summary')
+            : null;
+
+        if (!(summary instanceof HTMLElement)) {
+            return;
+        }
+
+        const details = summary.closest('.bai-bai-preset-backup-details');
+
+        if (!(details instanceof HTMLDetailsElement)) {
+            return;
+        }
+
+        event.preventDefault();
+        togglePresetBackupPreviewDetails(details);
+    });
+}
+
+function getPresetBackupPreviewSearchInputFromEvent(event) {
+    const target = event.target instanceof Element
+        ? event.target.closest('[data-preset-backup-search]')
+        : null;
+
+    return target instanceof HTMLInputElement ? target : null;
+}
+
+function applyPresetBackupPreviewSearchFilter(host) {
+    setPresetBackupPreviewPage(host, 1);
+    filterPresetBackupPreviewItems(host);
+}
+
+function togglePresetBackupPreviewDetails(details) {
+    const summary = details.querySelector('.bai-bai-preset-backup-summary');
+
+    if (!(summary instanceof HTMLElement)) {
+        details.open = !details.open;
+        return;
+    }
+
+    const shouldReduceMotion = typeof matchMedia === 'function'
+        && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (shouldReduceMotion || typeof details.animate !== 'function') {
+        details.open = !details.open;
+        return;
+    }
+
+    if (details.dataset.presetBackupAnimating === 'true') {
+        return;
+    }
+
+    const isClosing = details.open;
+
+    details.dataset.presetBackupAnimating = 'true';
+    details.style.overflow = 'hidden';
+    details.classList.toggle(PRESET_BACKUP_PREVIEW_CLOSING_CLASS, isClosing);
+
+    const startHeight = details.offsetHeight;
+    const endHeight = isClosing ? summary.offsetHeight : (() => {
+        details.style.height = `${startHeight}px`;
+        details.open = true;
+        return details.scrollHeight;
+    })();
+
+    details.style.height = `${startHeight}px`;
+
+    const animation = details.animate(
+        { height: [`${startHeight}px`, `${endHeight}px`] },
+        {
+            duration: PRESET_BACKUP_PREVIEW_EXPAND_ANIMATION_MS,
+            easing: 'ease',
+        },
+    );
+
+    animation.onfinish = () => {
+        if (startHeight > endHeight) {
+            details.open = false;
+        }
+
+        details.style.height = '';
+        details.style.overflow = '';
+        details.classList.remove(PRESET_BACKUP_PREVIEW_CLOSING_CLASS);
+        delete details.dataset.presetBackupAnimating;
+    };
+
+    animation.oncancel = () => {
+        details.style.height = '';
+        details.style.overflow = '';
+        details.classList.remove(PRESET_BACKUP_PREVIEW_CLOSING_CLASS);
+        delete details.dataset.presetBackupAnimating;
+    };
+}
+
+async function handlePresetBackupPreviewAction(host, button) {
+    const action = button.dataset.presetBackupAction;
+    const row = button.closest('[data-preset-backup-name]');
+    const name = row instanceof HTMLElement ? row.dataset.presetBackupName || '\u8fd9\u4e2a\u5907\u4efd' : '\u8fd9\u4e2a\u5907\u4efd';
+
+    if (action === 'prev-page' || action === 'next-page') {
+        const currentPage = getPresetBackupPreviewPage(host);
+        const nextPage = action === 'prev-page' ? currentPage - 1 : currentPage + 1;
+        setPresetBackupPreviewPage(host, nextPage);
+        filterPresetBackupPreviewItems(host);
+        return;
+    }
+
+    if (action === 'refresh') {
+        button.disabled = true;
+        button.classList.add('bai-bai-preset-backup-refreshing');
+        setPresetBackupPreviewStatus(host, '\u6b63\u5728\u5237\u65b0\u5907\u4efd\u5217\u8868...');
+
+        try {
+            const items = await fetchPresetBackupPreviewItems();
+            renderPresetBackupPreviewList(host, items);
+            setPresetBackupPreviewPage(host, 1);
+            filterPresetBackupPreviewItems(host);
+        } catch (error) {
+            console.warn(`${LOG_PREFIX} Failed to refresh preset backups`, error);
+            setPresetBackupPreviewStatus(host, `\u5237\u65b0\u5931\u8d25\uff1a${error?.message || '\u672a\u77e5\u9519\u8bef'}`);
+        } finally {
+            button.disabled = false;
+            button.classList.remove('bai-bai-preset-backup-refreshing');
+        }
+        return;
+    }
+
+    if (action === 'download') {
+        setPresetBackupPreviewStatus(host, `\u4e0b\u8f7d\u63a5\u53e3\u5f85\u63a5\u5165\uff1a${name}`);
+        return;
+    }
+
+    if (action === 'rename') {
+        setPresetBackupPreviewStatus(host, `\u91cd\u547d\u540d\u63a5\u53e3\u5f85\u63a5\u5165\uff1a${name}`);
+        return;
+    }
+
+    if (action === 'delete') {
+        setPresetBackupPreviewStatus(host, `\u5220\u9664\u63a5\u53e3\u5f85\u63a5\u5165\uff1a${name}`);
+    }
+}
+
+async function fetchPresetBackupPreviewItems() {
+    const response = await fetch(PRESET_BACKUP_PREVIEW_LIST_URL, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({}),
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const rawItems = Array.isArray(payload?.data?.items)
+        ? payload.data.items
+        : Array.isArray(payload?.items)
+            ? payload.items
+            : [];
+
+    return rawItems
+        .map(normalizePresetBackupPreviewItem)
+        .filter(Boolean);
+}
+
+function normalizePresetBackupPreviewItem(item) {
+    if (!item || typeof item !== 'object') {
+        return null;
+    }
+
+    const fileName = String(item.fileName || item.name || '').trim();
+
+    if (!fileName) {
+        return null;
+    }
+
+    return {
+        id: fileName,
+        name: fileName,
+        createdAt: formatPresetBackupPreviewTime(item.createdAt ?? item.createdAtMs),
+    };
+}
+
+function formatPresetBackupPreviewTime(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return new Date(value).toLocaleString();
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+        const date = new Date(value);
+
+        if (Number.isFinite(date.getTime())) {
+            return date.toLocaleString();
+        }
+
+        return value.trim();
+    }
+
+    return '\u65f6\u95f4\u672a\u77e5';
+}
+function filterPresetBackupPreviewItems(host) {
+    const input = host.querySelector('[data-preset-backup-search]');
+    const query = input instanceof HTMLInputElement ? input.value.trim().toLowerCase() : '';
+    const rows = Array.from(host.querySelectorAll('[data-preset-backup-row]'));
+    const matchedRows = rows.filter(row => {
+        if (!(row instanceof HTMLElement)) {
+            return false;
+        }
+
+        const text = String(row.dataset.presetBackupSearch || '').toLowerCase();
+        return !query || text.includes(query);
+    });
+    const total = rows.length;
+    const visibleCount = matchedRows.length;
+    const pageCount = Math.max(1, Math.ceil(visibleCount / PRESET_BACKUP_PREVIEW_PAGE_SIZE));
+    const page = clampPresetBackupPreviewPage(getPresetBackupPreviewPage(host), pageCount);
+    const pageStart = (page - 1) * PRESET_BACKUP_PREVIEW_PAGE_SIZE;
+    const pageEnd = pageStart + PRESET_BACKUP_PREVIEW_PAGE_SIZE;
+    const visibleRowSet = new Set(matchedRows.slice(pageStart, pageEnd));
+
+    for (const row of rows) {
+        if (!(row instanceof HTMLElement)) {
+            continue;
+        }
+
+        row.hidden = !visibleRowSet.has(row);
+    }
+
+    setPresetBackupPreviewPage(host, page);
+    syncPresetBackupPreviewPagination(host, {
+        page,
+        pageCount,
+        total,
+        visibleCount,
+        pageVisibleCount: visibleRowSet.size,
+    });
+
+    const empty = host.querySelector('[data-preset-backup-empty]');
+
+    if (empty instanceof HTMLElement) {
+        empty.hidden = visibleCount > 0;
+    }
+
+    if (total === 0) {
+        setPresetBackupPreviewStatus(host, '');
+        return;
+    }
+
+    const firstVisible = visibleCount > 0 ? pageStart + 1 : 0;
+    const lastVisible = visibleCount > 0 ? Math.min(pageEnd, visibleCount) : 0;
+    setPresetBackupPreviewStatus(
+        host,
+        query
+            ? `\u663e\u793a ${firstVisible}-${lastVisible} / ${visibleCount} \u4e2a\u5339\u914d\u5907\u4efd\uff0c\u5171 ${total} \u4e2a\u5907\u4efd`
+            : `\u663e\u793a ${firstVisible}-${lastVisible} / ${total} \u4e2a\u5907\u4efd`,
+    );
+}
+function getPresetBackupPreviewPage(host) {
+    return Math.max(1, Number(host.dataset.presetBackupPage) || 1);
+}
+
+function setPresetBackupPreviewPage(host, page) {
+    host.dataset.presetBackupPage = String(Math.max(1, Number(page) || 1));
+}
+
+function clampPresetBackupPreviewPage(page, pageCount) {
+    return Math.min(Math.max(1, Number(page) || 1), Math.max(1, Number(pageCount) || 1));
+}
+
+function syncPresetBackupPreviewPagination(host, { page, pageCount, visibleCount }) {
+    const pageLabel = host.querySelector('[data-preset-backup-page-label]');
+    const prevButton = host.querySelector('[data-preset-backup-action="prev-page"]');
+    const nextButton = host.querySelector('[data-preset-backup-action="next-page"]');
+
+    if (pageLabel instanceof HTMLElement) {
+        pageLabel.textContent = `${page} / ${pageCount}`;
+    }
+
+    if (prevButton instanceof HTMLButtonElement) {
+        prevButton.disabled = page <= 1 || visibleCount <= 0;
+    }
+
+    if (nextButton instanceof HTMLButtonElement) {
+        nextButton.disabled = page >= pageCount || visibleCount <= 0;
+    }
+}
+
+function setPresetBackupPreviewStatus(host, text) {
+    const status = host.querySelector('[data-preset-backup-status]');
+
+    if (status instanceof HTMLElement) {
+        status.textContent = text;
+    }
+}
+
+function renderPresetBackupPreviewUiHtml() {
+    return `
+        <details class="bai-bai-preset-backup-details">
+            <summary class="bai-bai-preset-backup-summary">
+                <span class="bai-bai-preset-backup-title">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>\u81ea\u52a8\u5907\u4efd\u9884\u8bbe</span>
+                </span>
+                <span class="bai-bai-preset-backup-summary-meta">
+                    <small>\u5907\u4efd\u5217\u8868</small>
+                    <i class="fa-solid fa-chevron-right bai-bai-preset-backup-chevron"></i>
+                </span>
+            </summary>
+            <div class="bai-bai-preset-backup-body">
+                <div class="bai-bai-preset-backup-toolbar">
+                    <label class="bai-bai-preset-backup-search">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input class="text_pole" type="search" placeholder="\u641c\u7d22\u5907\u4efd\u9884\u8bbe" autocomplete="off" data-preset-backup-search>
+                    </label>
+                    <button class="menu_button menu_button_icon bai-bai-preset-backup-refresh" type="button" title="\u5237\u65b0\u5907\u4efd\u5217\u8868" data-preset-backup-action="refresh">
+                        <i class="fa-solid fa-rotate-right"></i>
+                    </button>
+                </div>
+                <div class="bai-bai-preset-backup-status" data-preset-backup-status></div>
+                <div class="bai-bai-preset-backup-list" role="list">
+                    ${renderPresetBackupPreviewEmptyHtml()}
+                </div>
+                <div class="bai-bai-preset-backup-pagination" aria-label="\u5907\u4efd\u5206\u9875">
+                    <button class="menu_button menu_button_icon" type="button" title="\u4e0a\u4e00\u9875" data-preset-backup-action="prev-page">
+                        <i class="fa-solid fa-chevron-left"></i>
+                    </button>
+                    <span class="bai-bai-preset-backup-page-label" data-preset-backup-page-label>1 / 1</span>
+                    <button class="menu_button menu_button_icon" type="button" title="\u4e0b\u4e00\u9875" data-preset-backup-action="next-page">
+                        <i class="fa-solid fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </details>
+    `;
+}
+
+function renderPresetBackupPreviewList(host, items) {
+    const list = host.querySelector('.bai-bai-preset-backup-list');
+
+    if (list instanceof HTMLElement) {
+        list.innerHTML = `${renderPresetBackupPreviewItemsHtml(items)}${renderPresetBackupPreviewEmptyHtml()}`;
+    }
+}
+
+function renderPresetBackupPreviewEmptyHtml() {
+    return '<div class="bai-bai-preset-backup-empty" data-preset-backup-empty>\u6682\u65e0\u5907\u4efd\u6570\u636e</div>';
+}
+
+function renderPresetBackupPreviewItemsHtml(items) {
+    return items.map(item => {
+        const name = escapeHtml(item.name);
+        const createdAt = escapeHtml(item.createdAt);
+        const searchText = escapeHtml(`${item.name} ${item.createdAt}`);
+
+        return `
+            <div class="bai-bai-preset-backup-item" role="listitem" data-preset-backup-row data-preset-backup-id="${escapeHtml(item.id)}" data-preset-backup-name="${name}" data-preset-backup-search="${searchText}">
+                <div class="bai-bai-preset-backup-item-main">
+                    <strong class="bai-bai-preset-backup-item-name" title="${name}">${name}</strong>
+                    <small class="bai-bai-preset-backup-item-time">
+                        <i class="fa-regular fa-clock"></i>
+                        <span>${createdAt}</span>
+                    </small>
+                </div>
+                <div class="bai-bai-preset-backup-item-actions">
+                    <button class="menu_button menu_button_icon bai-bai-preset-backup-delete" type="button" title="\u5220\u9664\u5907\u4efd\uff08\u5360\u4f4d\uff09" data-preset-backup-action="delete">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                    <button class="menu_button menu_button_icon" type="button" title="\u7f16\u8f91\u5907\u4efd\u540d\u79f0\uff08\u5360\u4f4d\uff09" data-preset-backup-action="rename">
+                        <i class="fa-solid fa-pen-to-square"></i>
+                    </button>
+                    <button class="menu_button menu_button_icon" type="button" title="\u4e0b\u8f7d\u5907\u4efd\uff08\u5360\u4f4d\uff09" data-preset-backup-action="download">
+                        <i class="fa-solid fa-download"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+function applyPresetBackupPreviewUiStyle() {
+    let style = document.getElementById(PRESET_BACKUP_PREVIEW_UI_STYLE_ID);
+
+    if (!style) {
+        style = document.createElement('style');
+        style.id = PRESET_BACKUP_PREVIEW_UI_STYLE_ID;
+        document.head.append(style);
+    }
+
+    style.textContent = `
+#${PRESET_BACKUP_PREVIEW_UI_ID} {
+    box-sizing: border-box;
+    margin: 0 0 8px;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} *,
+#${PRESET_BACKUP_PREVIEW_UI_ID} *::before,
+#${PRESET_BACKUP_PREVIEW_UI_ID} *::after {
+    box-sizing: border-box;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-details {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 40%, transparent);
+    overflow: hidden;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 38px;
+    padding: 8px 10px;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-summary::-webkit-details-marker {
+    display: none;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-title,
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-summary-meta {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    gap: 6px;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-title {
+    font-weight: 700;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-title i {
+    color: var(--SmartThemeQuoteColor);
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-summary-meta {
+    flex: 0 0 auto;
+    opacity: 0.72;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-chevron {
+    transition: transform 0.16s ease;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} details[open]:not(.${PRESET_BACKUP_PREVIEW_CLOSING_CLASS}) .bai-bai-preset-backup-chevron {
+    transform: rotate(90deg);
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 10px 10px;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-search {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-search i {
+    position: absolute;
+    left: 10px;
+    z-index: 1;
+    opacity: 0.62;
+    pointer-events: none;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-search input {
+    width: 100%;
+    min-width: 0;
+    padding-left: 30px !important;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-refresh {
+    flex: 0 0 auto;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-refreshing i {
+    animation: bai-bai-preset-backup-spin 0.45s linear infinite;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-status {
+    min-height: 1.2em;
+    font-size: 0.86em;
+    opacity: 0.72;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-right: 2px;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 46px;
+    padding: 7px 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--SmartThemeChatTintColor) 42%, transparent);
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item[hidden],
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-empty[hidden] {
+    display: none !important;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item-name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.25;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item-time {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    opacity: 0.72;
+    line-height: 1.2;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item-actions {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 4px;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item-actions .menu_button,
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-refresh,
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-pagination .menu_button {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    inline-size: calc(var(--mainFontSize) * 1.8) !important;
+    block-size: calc(var(--mainFontSize) * 1.8) !important;
+    min-inline-size: calc(var(--mainFontSize) * 1.8) !important;
+    min-block-size: calc(var(--mainFontSize) * 1.8) !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    line-height: 1 !important;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-delete {
+    color: #d86666;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 64px;
+    padding: 10px;
+    border: 1px dashed var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    text-align: center;
+    opacity: 0.72;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-page-label {
+    min-width: 4.6em;
+    text-align: center;
+    font-size: 0.9em;
+    opacity: 0.78;
+}
+
+@keyframes bai-bai-preset-backup-spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (max-width: 600px) {
+    #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item {
+        align-items: flex-start;
+    }
+
+    #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item-actions {
+        padding-top: 1px;
+    }
+}
+`;
 }
 
 function applyPresetScrollOptimization() {
@@ -9329,6 +10074,7 @@ function removePresetPromptCodeMirrorEditorStyle() {
 }
 
 export {
+    applyPresetBackupPreviewUi,
     applyPresetDragOptimization,
     applyPresetGrouping,
     applyPresetPromptCodeMirrorEditorOptimization,

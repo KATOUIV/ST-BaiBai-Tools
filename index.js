@@ -3306,6 +3306,7 @@ function applyFeatureSettings() {
     presetOptimizations.applyPresetScrollOptimization();
     presetOptimizations.applyPresetDragOptimization();
     presetOptimizations.applyPresetGrouping();
+    presetOptimizations.applyPresetBackupPreviewUi();
     presetOptimizations.applyPresetSwitchOptimization();
     presetOptimizations.applyPresetToggleOptimization();
     presetOptimizations.applyPresetPromptCodeMirrorEditorOptimization();
