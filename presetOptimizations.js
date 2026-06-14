@@ -27,6 +27,7 @@ const PRESET_DELETE_HANDLER_KEY = '__baiBaiToolkitPresetDeleteHandler';
 const PRESET_LIST_ACTION_HANDLER_KEY = '__baiBaiToolkitPresetListActionHandler';
 const PRESET_TOGGLE_HANDLER_KEY = '__baiBaiToolkitPresetToggleHandler';
 const PRESET_SAVE_HANDLER_KEY = '__baiBaiToolkitPresetSaveHandler';
+const PRESET_UPDATE_PENDING_CHANGES_HANDLER_KEY = '__baiBaiToolkitPresetUpdatePendingChangesHandler';
 const PRESET_EXPORT_PENDING_CHANGES_HANDLER_KEY = '__baiBaiToolkitPresetExportPendingChangesHandler';
 const PRESET_VUE_LIST_MANAGER_KEY = '__baiBaiToolkitPresetVueListManager';
 const PRESET_VUE_LIST_RENDER_PATCH_KEY = '__baiBaiToolkitPresetVueListRenderPatch';
@@ -315,6 +316,7 @@ function applyPresetDragOptimization() {
 
 function applyPresetGrouping() {
     installPresetExportPendingChangesGuard();
+    installPresetUpdatePendingChangesGuard();
     applyPresetGroupRenameCleanup();
 
     if (!isPresetGroupingEnabled()) {
@@ -367,6 +369,75 @@ function installPresetExportPendingChangesGuard() {
 
     extensionState[PRESET_EXPORT_PENDING_CHANGES_HANDLER_KEY] = handler;
     document.addEventListener('click', handler, true);
+}
+
+function installPresetUpdatePendingChangesGuard() {
+    if (extensionState[PRESET_UPDATE_PENDING_CHANGES_HANDLER_KEY]) {
+        return;
+    }
+
+    const handler = event => {
+        const target = event.target instanceof Element
+            ? event.target.closest(OPENAI_PRESET_UPDATE_SELECTOR)
+            : null;
+
+        if (!(target instanceof HTMLElement)) {
+            return;
+        }
+
+        if (extensionState.presetUpdatePendingChangesBypass) {
+            extensionState.presetUpdatePendingChangesBypass = false;
+            return;
+        }
+
+        if (!hasPendingPresetPromptChanges()) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        void saveOpenAiPresetAfterPendingRuntimeCommit(target);
+    };
+
+    extensionState[PRESET_UPDATE_PENDING_CHANGES_HANDLER_KEY] = handler;
+    document.addEventListener('click', handler, true);
+}
+
+async function saveOpenAiPresetAfterPendingRuntimeCommit(updateButton) {
+    if (extensionState.presetUpdatePendingChangesSaveInFlight) {
+        return;
+    }
+
+    extensionState.presetUpdatePendingChangesSaveInFlight = true;
+
+    try {
+        const presetName = oai_settings?.preset_settings_openai;
+        await commitPendingPresetPromptChangesToRuntime(presetName);
+        removePresetPromptManagerVisibilityWatch();
+
+        const waitForSave = waitForOpenAiPresetUpdateRequest(presetName);
+        extensionState.presetUpdatePendingChangesBypass = true;
+
+        try {
+            updateButton.click();
+        } finally {
+            if (extensionState.presetUpdatePendingChangesBypass) {
+                extensionState.presetUpdatePendingChangesBypass = false;
+            }
+        }
+
+        await waitForSave;
+        clearPendingPresetPromptChangesForPreset(presetName);
+    } catch (error) {
+        if (hasPendingPresetPromptChanges()) {
+            schedulePendingPresetPromptChangesFlushCheck();
+        }
+        console.debug(`${LOG_PREFIX} Failed to prepare pending preset prompt changes before preset save`, error);
+        toastr.error(t`Failed to prepare preset prompt changes before saving. See console for details.`);
+    } finally {
+        extensionState.presetUpdatePendingChangesSaveInFlight = false;
+    }
 }
 
 async function confirmSavePendingPresetChangesBeforeExport(exportButton) {
@@ -5250,6 +5321,91 @@ function clearPendingPresetPromptChanges() {
     getPendingPresetPromptServiceSaves(manager).clear();
     getPendingPresetPromptGroupSaves(manager).clear();
     removePresetPromptManagerVisibilityWatch();
+}
+
+function clearPendingPresetPromptChangesForPreset(presetName) {
+    if (!presetName) {
+        clearPendingPresetPromptChanges();
+        return;
+    }
+
+    const manager = getPresetVuePromptListManagerState();
+    clearPresetVuePromptOrderSaveSchedule(manager);
+
+    const pendingServiceSaves = getPendingPresetPromptServiceSaves(manager);
+    const pendingGroupSaves = getPendingPresetPromptGroupSaves(manager);
+    const groupEntry = pendingGroupSaves.get(presetName);
+
+    pendingServiceSaves.delete(presetName);
+    pendingGroupSaves.delete(presetName);
+
+    if (groupEntry?.syncKey && oai_settings?.preset_settings_openai === presetName) {
+        extensionState.presetPromptGroupExtensionSyncKey = groupEntry.syncKey;
+    }
+
+    manager.pendingServiceSettingsSave = pendingServiceSaves.size > 0;
+    manager.pendingGroupSettingsSave = pendingGroupSaves.size > 0;
+
+    if (hasPendingPresetPromptChanges()) {
+        schedulePendingPresetPromptChangesFlushCheck();
+    } else {
+        removePresetPromptManagerVisibilityWatch();
+    }
+}
+
+async function commitPendingPresetPromptChangesToRuntime(presetName = oai_settings?.preset_settings_openai) {
+    const manager = getPresetVuePromptListManagerState();
+
+    if (manager.pendingChangesSavePromise) {
+        await manager.pendingChangesSavePromise;
+    }
+
+    await flushScheduledPresetVuePromptOrderSave();
+
+    if (!presetName) {
+        return;
+    }
+
+    applyPendingPresetPromptServiceSaveToMemory(getPendingPresetPromptServiceSaves(manager).get(presetName));
+    applyPendingPresetPromptGroupSaveToMemory(getPendingPresetPromptGroupSaves(manager).get(presetName));
+}
+
+function applyPendingPresetPromptServiceSaveToMemory(entry) {
+    if (!entry?.presetName || !entry.promptOrder) {
+        return false;
+    }
+
+    const promptOrder = structuredClone(entry.promptOrder);
+    const presetManager = getPresetManager('openai');
+    const preset = presetManager?.getCompletionPresetByName?.(entry.presetName);
+
+    if (preset) {
+        preset.prompt_order = structuredClone(promptOrder);
+    }
+
+    if (oai_settings?.preset_settings_openai === entry.presetName) {
+        oai_settings.prompt_order = structuredClone(promptOrder);
+        if (promptManager) {
+            promptManager.serviceSettings = oai_settings;
+        }
+    }
+
+    return true;
+}
+
+function applyPendingPresetPromptGroupSaveToMemory(entry) {
+    if (!entry?.presetName || !entry.groupState) {
+        return false;
+    }
+
+    applyPresetPromptGroupExtensionPayloadToMemory({
+        presetName: entry.presetName,
+        presetManager: getPresetManager('openai'),
+        groupState: structuredClone(entry.groupState),
+        syncKey: entry.syncKey || `${entry.presetName}:${JSON.stringify(entry.groupState)}`,
+    });
+
+    return true;
 }
 
 function installPresetPendingChangesLifecycleGuard() {
