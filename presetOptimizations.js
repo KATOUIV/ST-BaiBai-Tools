@@ -177,6 +177,7 @@ export function bindPresetOptimizationSettings({ saveSettings } = {}) {
             settings.presetMobileWholeRowDragEnabled = Boolean($(this).prop('checked'));
             cancelPromptManagerCustomDragPending();
             finishPromptManagerCustomDrag({ cancelled: true });
+            rebuildPresetVuePromptListDraggable();
             persistSettings();
             applyPresetDragOptimization();
         });
@@ -556,6 +557,17 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     padding: 0 !important;
     font-size: calc(var(--mainFontSize) * 0.9) !important;
     line-height: 1 !important;
+}
+
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-toggle {
+    transform: rotate(0deg);
+    transform-origin: center;
+    transition: transform ${PRESET_VUE_EXPAND_ANIMATION_MS}ms ease;
+}
+
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-collapsed .bai-bai-preset-group-toggle {
+    transform: rotate(-90deg);
+    transition-duration: ${PRESET_VUE_COLLAPSE_ANIMATION_MS}ms;
 }
 
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-enable-toggle {
@@ -1298,6 +1310,7 @@ function removePresetVuePromptListManager({ skipRestore = false } = {}) {
 function unmountPresetVuePromptListApp(manager = getPresetVuePromptListManagerState()) {
     clearPresetVuePromptOrderSaveSchedule(manager);
     setPresetVuePromptDragScrollGuardEnabled(false);
+    clearPresetVuePromptGroupBodyUnmountTimers(manager);
 
     if (manager.app) {
         try {
@@ -1350,6 +1363,7 @@ function getPresetVuePromptListManagerState() {
             pendingPresetPromptGroupSaves: null,
             pendingVisibilityTimer: null,
             pendingVisibilityObserver: null,
+            groupBodyUnmountTimers: null,
             dragReadyFeedbackTimer: null,
             dragReadyFeedbackElement: null,
             dragReadyFeedbackNotified: false,
@@ -1620,6 +1634,7 @@ function createPresetVuePromptListModel() {
         listClassName: `text_pole ${PRESET_DRAG_READY_CLASS}`,
         renderKey: 0,
         reclaimKey: 0,
+        mountedGroupBodies: {},
         dragging: false,
         rangeSelection: {
             active: false,
@@ -1642,8 +1657,145 @@ function syncPresetVuePromptListManagerState() {
     repairPresetPromptGroupStateIfNeeded();
     syncCurrentPresetPromptGroupStateToPresetExtensionField({ persist: false });
     manager.state.items = buildPresetVuePromptListItems();
+    syncPresetVuePromptGroupBodyMountState(manager.state);
+    return true;
+}
+
+function rebuildPresetVuePromptListDraggable() {
+    const manager = getPresetVuePromptListManagerState();
+
+    if (!manager.state) {
+        return false;
+    }
+
     manager.state.renderKey += 1;
     return true;
+}
+
+function syncPresetVuePromptGroupBodyMountState(model) {
+    if (!model || !Array.isArray(model.items)) {
+        return;
+    }
+
+    if (!model.mountedGroupBodies || typeof model.mountedGroupBodies !== 'object') {
+        model.mountedGroupBodies = {};
+    }
+
+    const manager = getPresetVuePromptListManagerState();
+    const validGroupIds = new Set();
+
+    for (const item of model.items) {
+        if (item?.type !== 'group' || !item.groupId) {
+            continue;
+        }
+
+        validGroupIds.add(item.groupId);
+
+        if (!item.collapsed) {
+            clearPresetVuePromptGroupBodyUnmountTimer(manager, item.groupId);
+            model.mountedGroupBodies[item.groupId] = true;
+            continue;
+        }
+
+        if (!hasPresetVuePromptGroupBodyUnmountTimer(manager, item.groupId)) {
+            delete model.mountedGroupBodies[item.groupId];
+        }
+    }
+
+    for (const groupId of Object.keys(model.mountedGroupBodies)) {
+        if (!validGroupIds.has(groupId)) {
+            delete model.mountedGroupBodies[groupId];
+            clearPresetVuePromptGroupBodyUnmountTimer(manager, groupId);
+        }
+    }
+}
+
+function getPresetVuePromptGroupBodyUnmountTimers(manager = getPresetVuePromptListManagerState()) {
+    if (!(manager.groupBodyUnmountTimers instanceof Map)) {
+        manager.groupBodyUnmountTimers = new Map();
+    }
+
+    return manager.groupBodyUnmountTimers;
+}
+
+function hasPresetVuePromptGroupBodyUnmountTimer(manager, groupId) {
+    return manager.groupBodyUnmountTimers instanceof Map && manager.groupBodyUnmountTimers.has(groupId);
+}
+
+function clearPresetVuePromptGroupBodyUnmountTimer(manager, groupId) {
+    if (!(manager.groupBodyUnmountTimers instanceof Map)) {
+        return;
+    }
+
+    const timer = manager.groupBodyUnmountTimers.get(groupId);
+
+    if (timer) {
+        clearTimeout(timer);
+    }
+
+    manager.groupBodyUnmountTimers.delete(groupId);
+}
+
+function clearPresetVuePromptGroupBodyUnmountTimers(manager = getPresetVuePromptListManagerState()) {
+    if (!(manager.groupBodyUnmountTimers instanceof Map)) {
+        return;
+    }
+
+    for (const timer of manager.groupBodyUnmountTimers.values()) {
+        clearTimeout(timer);
+    }
+
+    manager.groupBodyUnmountTimers.clear();
+}
+
+function setPresetVuePromptGroupBodyMounted(model, groupId, mounted) {
+    if (!model || !groupId) {
+        return;
+    }
+
+    if (!model.mountedGroupBodies || typeof model.mountedGroupBodies !== 'object') {
+        model.mountedGroupBodies = {};
+    }
+
+    if (mounted) {
+        model.mountedGroupBodies[groupId] = true;
+        return;
+    }
+
+    delete model.mountedGroupBodies[groupId];
+}
+
+function isPresetVuePromptGroupBodyMounted(model, item) {
+    if (!item?.groupId) {
+        return false;
+    }
+
+    return item.collapsed
+        ? Boolean(model?.mountedGroupBodies?.[item.groupId])
+        : true;
+}
+
+function schedulePresetVuePromptGroupBodyUnmount(groupId) {
+    const manager = getPresetVuePromptListManagerState();
+    const model = manager.state;
+
+    if (!model || !groupId) {
+        return;
+    }
+
+    clearPresetVuePromptGroupBodyUnmountTimer(manager, groupId);
+
+    const timer = setTimeout(() => {
+        clearPresetVuePromptGroupBodyUnmountTimer(manager, groupId);
+
+        const groupItem = model.items?.find(item => item?.type === 'group' && item.groupId === groupId);
+
+        if (!groupItem || groupItem.collapsed) {
+            setPresetVuePromptGroupBodyMounted(model, groupId, false);
+        }
+    }, PRESET_VUE_COLLAPSE_ANIMATION_MS);
+
+    getPresetVuePromptGroupBodyUnmountTimers(manager).set(groupId, timer);
 }
 
 function repairPresetPromptOrderDuplicatesIfNeeded() {
@@ -3097,7 +3249,7 @@ function renderPresetVuePromptGroup(h, vueDraggableNext, item) {
                         'menu_button',
                         'bai-bai-preset-group-toggle',
                         'fa-solid',
-                        item.collapsed ? 'fa-chevron-right' : 'fa-chevron-down',
+                        'fa-chevron-down',
                     ],
                     title: item.collapsed ? t`展开分组` : t`收起分组`,
                     onClick: event => {
@@ -3556,15 +3708,18 @@ function clearPresetVuePromptDragReadyFeedback(manager = getPresetVuePromptListM
 }
 
 function renderPresetVuePromptGroupBody(h, vueDraggableNext, item, draggableProps) {
+    const model = getPresetVuePromptListManagerState().state;
+    const mounted = isPresetVuePromptGroupBodyMounted(model, item);
+
     return h('div', {
         class: 'bai-bai-preset-group-body',
         'aria-hidden': item.collapsed ? 'true' : 'false',
     }, [
-        h('div', { class: 'bai-bai-preset-group-body-inner' }, [
+        h('div', { class: 'bai-bai-preset-group-body-inner' }, mounted ? [
             h(vueDraggableNext.VueDraggableNext, draggableProps, {
                 default: () => (item.children ?? []).map(child => renderPresetVuePromptRow(h, child, { groupChild: true })),
             }),
-        ]),
+        ] : []),
     ]);
 }
 
@@ -4732,8 +4887,17 @@ function togglePresetVuePromptGroupCollapsed(groupId) {
         return;
     }
 
-    group.collapsed = !group.collapsed;
-    const modelGroup = getPresetVuePromptListManagerState().state?.items?.find(item => item?.type === 'group' && item.groupId === groupId);
+    const manager = getPresetVuePromptListManagerState();
+    const model = manager.state;
+    const nextCollapsed = !group.collapsed;
+
+    if (!nextCollapsed) {
+        clearPresetVuePromptGroupBodyUnmountTimer(manager, groupId);
+        setPresetVuePromptGroupBodyMounted(model, groupId, true);
+    }
+
+    group.collapsed = nextCollapsed;
+    const modelGroup = model?.items?.find(item => item?.type === 'group' && item.groupId === groupId);
 
     if (modelGroup) {
         modelGroup.collapsed = group.collapsed;
@@ -4741,6 +4905,10 @@ function togglePresetVuePromptGroupCollapsed(groupId) {
         if (modelGroup.group) {
             modelGroup.group.collapsed = group.collapsed;
         }
+    }
+
+    if (nextCollapsed) {
+        schedulePresetVuePromptGroupBodyUnmount(groupId);
     }
 
     savePresetPromptGroupSettings();
