@@ -40,6 +40,14 @@ const LONG_CHAT_DOM_RENDER_GENERATION_ANCHOR_RELEASE_MS = 1200;
 const LONG_CHAT_DOM_RENDER_LATEST_MESSAGE_TOP_OFFSET_RATIO = 0.18;
 const LONG_CHAT_DOM_RENDER_LATEST_MESSAGE_TOP_OFFSET_MIN = 24;
 const LONG_CHAT_DOM_RENDER_LATEST_MESSAGE_TOP_OFFSET_MAX = 160;
+const LONG_CHAT_DOM_RENDER_WIDTH_BUCKET_SIZE = 80;
+const LONG_CHAT_DOM_RENDER_DEBUG_LOG_INTERVAL_MS = 500;
+const LONG_CHAT_DOM_RENDER_DEBUG_LOG_SLOW_MS = 16;
+const LONG_CHAT_DOM_RENDER_ESTIMATE_SAFETY_MULTIPLIER = 1.25;
+const LONG_CHAT_DOM_RENDER_ESTIMATE_EXTRA_PX = 80;
+const LONG_CHAT_DOM_RENDER_ESTIMATE_MAX_HEIGHT = 80000;
+const LONG_CHAT_DOM_RENDER_ESTIMATOR_ALPHA = 0.35;
+const LONG_CHAT_DOM_RENDER_ESTIMATOR_MAX_SCALE = 4;
 const LONG_CHAT_DOM_RENDER_BOTTOM_ANCHOR_CLASS = 'bai-bai-toolkit-long-chat-bottom-anchor';
 const LONG_CHAT_DOM_RENDER_BOTTOM_ANCHORED_CLASS = 'bai-bai-toolkit-long-chat-bottom-anchored';
 const LONG_CHAT_DOM_RENDER_HEIGHT_VAR = '--bai-bai-toolkit-long-chat-mes-height';
@@ -79,7 +87,7 @@ const BUILTIN_COMPLETION_SOUNDS = [
 
 let settings = {};
 let extensionState = {};
-let LOG_PREFIX = '[BaiBaiToolkit]';
+let LOG_PREFIX = '[\u67cf\u5b9d\u7bb1]';
 let fastChatListRequestId = 0;
 let recordLongDomRefresh = null;
 
@@ -328,6 +336,18 @@ function getLongChatDomRenderState() {
     if (!(state.heightCache instanceof Map)) {
         state.heightCache = new Map();
     }
+    if (!(state.messageRecords instanceof Map)) {
+        state.messageRecords = new Map();
+    }
+    if (!(state.pendingMessageIds instanceof Set)) {
+        state.pendingMessageIds = new Set();
+    }
+    if (!(state.tailMessageIds instanceof Set)) {
+        state.tailMessageIds = new Set();
+    }
+    if (!(state.roleHeightEstimators instanceof Map)) {
+        state.roleHeightEstimators = new Map();
+    }
     if (!Array.isArray(state.eventHandlers)) {
         state.eventHandlers = [];
     }
@@ -344,15 +364,23 @@ function installLongChatDomRenderOptimization() {
     if (!state.installed) {
         const chatLoadHandler = () => {
             state.userScrolledAway = false;
-            scheduleLongChatDomRenderRefresh({ autoScroll: true, reason: 'chat-load' });
+            scheduleLongChatDomRenderRefresh({ autoScroll: true, reason: 'chat-load', mode: 'full' });
         };
-        const chatMutationHandler = () => {
-            scheduleLongChatDomRenderRefresh({ autoScroll: false, reason: 'chat-update' });
+        const chatMutationHandler = (reason = 'chat-update') => {
+            scheduleLongChatDomRenderRefresh({ autoScroll: false, reason, mode: 'full' });
             scheduleLongChatDomRenderGenerationAnchor('chat-update');
+        };
+        const messageRenderedHandler = (messageId) => {
+            scheduleLongChatDomRenderRefresh({ autoScroll: false, reason: 'message-rendered', mode: 'incremental', messageIds: [messageId] });
+            scheduleLongChatDomRenderGenerationAnchor('message-rendered');
+        };
+        const messageUpdatedHandler = (messageId) => {
+            scheduleLongChatDomRenderRefresh({ autoScroll: false, reason: 'message-updated', mode: 'incremental', messageIds: [messageId] });
+            scheduleLongChatDomRenderGenerationAnchor('message-updated');
         };
         const messageDeletedHandler = () => {
             pruneLongChatDomRenderCurrentChatHeightCache();
-            chatMutationHandler();
+            chatMutationHandler('message-deleted');
         };
         const generationStartedHandler = () => {
             state.generationActive = true;
@@ -361,7 +389,7 @@ function installLongChatDomRenderOptimization() {
                 state.userScrolledAway = false;
                 scheduleLongChatDomRenderGenerationAnchor('generation-started');
             }
-            scheduleLongChatDomRenderRefresh({ autoScroll: false, reason: 'generation-started' });
+            scheduleLongChatDomRenderRefresh({ autoScroll: false, reason: 'generation-started', mode: 'incremental', messageIds: [getLongChatDomRenderLatestMessageId()] });
         };
         const generationEndedHandler = () => {
             const shouldScrollToLatestMessageStart = shouldScrollLongChatDomRenderToLatestMessageStartAfterGeneration(state);
@@ -374,10 +402,10 @@ function installLongChatDomRenderOptimization() {
 
         addLongChatDomRenderEventHandler(event_types.CHAT_CHANGED, chatLoadHandler);
         addLongChatDomRenderEventHandler(event_types.CHAT_LOADED, chatLoadHandler);
-        addLongChatDomRenderEventHandler(event_types.MORE_MESSAGES_LOADED, chatMutationHandler);
-        addLongChatDomRenderEventHandler(event_types.USER_MESSAGE_RENDERED, chatMutationHandler);
-        addLongChatDomRenderEventHandler(event_types.CHARACTER_MESSAGE_RENDERED, chatMutationHandler);
-        addLongChatDomRenderEventHandler(event_types.MESSAGE_UPDATED, chatMutationHandler);
+        addLongChatDomRenderEventHandler(event_types.MORE_MESSAGES_LOADED, () => chatMutationHandler('more-messages-loaded'));
+        addLongChatDomRenderEventHandler(event_types.USER_MESSAGE_RENDERED, messageRenderedHandler);
+        addLongChatDomRenderEventHandler(event_types.CHARACTER_MESSAGE_RENDERED, messageRenderedHandler);
+        addLongChatDomRenderEventHandler(event_types.MESSAGE_UPDATED, messageUpdatedHandler);
         addLongChatDomRenderEventHandler(event_types.MESSAGE_DELETED, messageDeletedHandler);
         addLongChatDomRenderEventHandler(event_types.GENERATION_STARTED, generationStartedHandler);
         addLongChatDomRenderEventHandler(event_types.GENERATION_STOPPED, generationEndedHandler);
@@ -412,6 +440,7 @@ function removeLongChatDomRenderOptimization() {
     state.userScrolledAway = false;
     state.generationActive = false;
     state.generationAnchorEnabled = false;
+    resetLongChatDomRenderIndex(state);
     clearTimeout(state.generationAnchorTimer);
     clearTimeout(state.generationAnchorReleaseTimer);
     state.generationAnchorTimer = null;
@@ -512,7 +541,7 @@ function detachLongChatDomRenderChatObservers() {
     state.scrollHandler = null;
 }
 
-function scheduleLongChatDomRenderRefresh({ autoScroll = false, reason = '' } = {}) {
+function scheduleLongChatDomRenderRefresh({ autoScroll = false, reason = '', mode = 'full', messageIds = [] } = {}) {
     if (!settings.longChatDomRenderOptimizationEnabled) {
         return;
     }
@@ -520,12 +549,29 @@ function scheduleLongChatDomRenderRefresh({ autoScroll = false, reason = '' } = 
     const state = getLongChatDomRenderState();
     state.pendingAutoScroll = Boolean(state.pendingAutoScroll || autoScroll);
     state.pendingReason = reason || state.pendingReason || '';
+    state.pendingRefreshMode = state.pendingRefreshMode === 'full' || mode !== 'incremental'
+        ? 'full'
+        : 'incremental';
+
+    for (const messageId of normalizeLongChatDomRenderMessageIds(messageIds)) {
+        state.pendingMessageIds.add(messageId);
+    }
+
+    if (state.pendingRefreshMode === 'incremental' && state.pendingMessageIds.size === 0) {
+        state.pendingRefreshMode = 'full';
+    }
 
     clearTimeout(state.refreshTimer);
     state.refreshTimer = setTimeout(() => {
         state.refreshTimer = null;
         const pendingReason = state.pendingReason || 'refresh';
-        refreshLongChatDomRenderOptimization({ reason: pendingReason });
+        const pendingMode = state.pendingRefreshMode || 'full';
+        const pendingMessageIds = [...state.pendingMessageIds];
+
+        state.pendingRefreshMode = '';
+        state.pendingMessageIds.clear();
+
+        refreshLongChatDomRenderOptimization({ reason: pendingReason, mode: pendingMode, messageIds: pendingMessageIds });
 
         if (state.pendingAutoScroll) {
             state.pendingAutoScroll = false;
@@ -535,7 +581,7 @@ function scheduleLongChatDomRenderRefresh({ autoScroll = false, reason = '' } = 
     }, 40);
 }
 
-function refreshLongChatDomRenderOptimization({ reason = '' } = {}) {
+function refreshLongChatDomRenderOptimization({ reason = '', mode = 'full', messageIds = [] } = {}) {
     if (!settings.longChatDomRenderOptimizationEnabled) {
         return;
     }
@@ -550,6 +596,25 @@ function refreshLongChatDomRenderOptimization({ reason = '' } = {}) {
         return;
     }
 
+    ensureLongChatDomRenderObservers();
+
+    const state = getLongChatDomRenderState();
+    const chat = Array.isArray(scriptModule.chat) ? scriptModule.chat : [];
+
+    if (mode === 'incremental') {
+        const handled = refreshLongChatDomRenderIncremental({
+            state,
+            chatElement,
+            chat,
+            reason,
+            messageIds,
+        });
+
+        if (handled) {
+            return;
+        }
+    }
+
     const startedAt = performance.now();
     const refreshStats = {
         reason,
@@ -562,35 +627,38 @@ function refreshLongChatDomRenderOptimization({ reason = '' } = {}) {
         cached: 0,
         estimated: 0,
         measured: 0,
+        skipped: 0,
     };
 
-    ensureLongChatDomRenderObservers();
-
     const messages = [...chatElement.querySelectorAll('.mes')].filter(element => element instanceof HTMLElement);
-    const chat = Array.isArray(scriptModule.chat) ? scriptModule.chat : [];
-    const stats = calculateVisibleMessageTextStats(chat, messages);
+    rebuildLongChatDomRenderIndex(state, chatElement, messages, chat);
+    const stats = getLongChatDomRenderIndexStats(state);
     const shouldOptimize = shouldOptimizeLongChatDomRender(stats, messages.length);
 
     refreshStats.messages = messages.length;
     refreshStats.optimized = shouldOptimize;
     chatElement.classList.toggle('bai-bai-toolkit-long-chat-render-optimized', shouldOptimize);
 
-    const state = getLongChatDomRenderState();
     const editingMessages = getLongChatDomRenderEditingMessages(chatElement);
     const uncontainedTailMessages = getLongChatDomRenderUncontainedTailMessages(messages, chat.length);
+    state.tailMessageIds = getLongChatDomRenderMessageIdsFromElements(uncontainedTailMessages);
+    state.optimized = shouldOptimize;
     const chatWidth = chatElement.clientWidth || window.innerWidth;
     for (const element of messages) {
+        const mesId = element.getAttribute('mesid') || '';
+        const record = state.messageRecords.get(mesId) || null;
         if (shouldOptimize && !uncontainedTailMessages.has(element)) {
-            applyLongChatDomRenderToMessage(element, chat, refreshStats, { editingMessages, chatWidth });
-            state.resizeObserver?.observe(element);
+            applyLongChatDomRenderToMessage(element, chat, refreshStats, { editingMessages, chatWidth, record });
+            observeLongChatDomRenderMessage(element, record, state);
         } else {
             if (shouldOptimize && uncontainedTailMessages.has(element)) {
                 refreshStats.tail += 1;
             }
-            cleanupLongChatDomRenderMessage(element);
-            state.resizeObserver?.unobserve(element);
+            cleanupLongChatDomRenderMessage(element, record);
+            unobserveLongChatDomRenderMessage(element, record, state);
         }
     }
+    updateLongChatDomRenderRoleHeightEstimators(state, uncontainedTailMessages, chat, chatWidth);
 
     if (shouldOptimize && isLongChatDomRenderGenerationActive()) {
         scheduleLongChatDomRenderGenerationAnchor(reason || 'refresh');
@@ -601,6 +669,431 @@ function refreshLongChatDomRenderOptimization({ reason = '' } = {}) {
 
     refreshStats.duration = performance.now() - startedAt;
     recordLongDomRefresh?.(refreshStats);
+    logLongChatDomRenderRefresh(refreshStats, 'full');
+}
+
+function refreshLongChatDomRenderIncremental({ state, chatElement, chat, reason = '', messageIds = [] } = {}) {
+    const normalizedIds = normalizeLongChatDomRenderMessageIds(messageIds);
+    if (!normalizedIds.length || !isLongChatDomRenderIndexReady(state, chatElement)) {
+        return false;
+    }
+
+    const startedAt = performance.now();
+    const refreshStats = {
+        reason,
+        duration: 0,
+        messages: Number(state.messageCount || 0),
+        optimized: Boolean(state.optimized),
+        contained: 0,
+        editing: 0,
+        tail: 0,
+        cached: 0,
+        estimated: 0,
+        measured: 0,
+        skipped: 0,
+    };
+    const touchedMessageIds = new Set([
+        ...normalizedIds,
+        ...(state.tailMessageIds instanceof Set ? state.tailMessageIds : []),
+    ]);
+
+    for (const mesId of normalizedIds) {
+        const element = getLongChatDomRenderMessageElement(chatElement, mesId);
+        if (!(element instanceof HTMLElement)) {
+            return false;
+        }
+
+        if (!syncLongChatDomRenderRecord(state, element, chat)) {
+            return false;
+        }
+    }
+
+    const nextTailMessageIds = getLongChatDomRenderTailMessageIdsForChat(chat.length);
+    for (const mesId of nextTailMessageIds) {
+        touchedMessageIds.add(mesId);
+    }
+
+    const stats = getLongChatDomRenderIndexStats(state);
+    const shouldOptimize = shouldOptimizeLongChatDomRender(stats, Number(state.messageCount || 0));
+
+    if (shouldOptimize !== Boolean(state.optimized)) {
+        return false;
+    }
+
+    refreshStats.messages = Number(state.messageCount || 0);
+    refreshStats.optimized = shouldOptimize;
+    chatElement.classList.toggle('bai-bai-toolkit-long-chat-render-optimized', shouldOptimize);
+
+    const editingMessages = getLongChatDomRenderEditingMessages(chatElement);
+    const chatWidth = chatElement.clientWidth || window.innerWidth;
+    for (const mesId of touchedMessageIds) {
+        const record = state.messageRecords.get(mesId);
+        if (!record?.element?.isConnected) {
+            continue;
+        }
+
+        if (shouldOptimize && !nextTailMessageIds.has(mesId)) {
+            applyLongChatDomRenderToMessage(record.element, chat, refreshStats, { editingMessages, chatWidth, record });
+            observeLongChatDomRenderMessage(record.element, record, state);
+        } else {
+            if (shouldOptimize && nextTailMessageIds.has(mesId)) {
+                refreshStats.tail += 1;
+            }
+            cleanupLongChatDomRenderMessage(record.element, record);
+            unobserveLongChatDomRenderMessage(record.element, record, state);
+        }
+    }
+    updateLongChatDomRenderRoleHeightEstimatorsForIds(state, chatElement, nextTailMessageIds, chat, chatWidth);
+
+    state.tailMessageIds = nextTailMessageIds;
+
+    if (shouldOptimize && isLongChatDomRenderGenerationActive()) {
+        scheduleLongChatDomRenderGenerationAnchor(reason || 'refresh');
+    } else if (!shouldOptimize && state.generationAnchorEnabled) {
+        state.generationAnchorEnabled = false;
+        removeLongChatDomRenderBottomAnchorIfIdle(state);
+    }
+
+    refreshStats.duration = performance.now() - startedAt;
+    recordLongDomRefresh?.(refreshStats);
+    logLongChatDomRenderRefresh(refreshStats, 'incremental');
+    return true;
+}
+
+function logLongChatDomRenderRefresh(stats, mode = 'full') {
+    const state = getLongChatDomRenderState();
+    const now = performance.now();
+    const duration = Number(stats?.duration || 0);
+    const lastLoggedAt = Number(state.lastLongDomDebugLogAt || 0);
+
+    if (duration < LONG_CHAT_DOM_RENDER_DEBUG_LOG_SLOW_MS
+        && now - lastLoggedAt < LONG_CHAT_DOM_RENDER_DEBUG_LOG_INTERVAL_MS) {
+        return;
+    }
+
+    state.lastLongDomDebugLogAt = now;
+    console.info(`${LOG_PREFIX} longdom mode=${mode} reason=${stats?.reason || 'refresh'} duration=${duration.toFixed(1)}ms messages=${stats?.messages || 0} optimized=${stats?.optimized ? 'yes' : 'no'} contained=${stats?.contained || 0} tail=${stats?.tail || 0} cached=${stats?.cached || 0} estimated=${stats?.estimated || 0} measured=${stats?.measured || 0} skipped=${stats?.skipped || 0}`);
+}
+
+function updateLongChatDomRenderRoleHeightEstimatorsForIds(state, chatElement, messageIds, chat, width) {
+    const elements = [];
+
+    for (const mesId of messageIds || []) {
+        const record = state.messageRecords?.get?.(String(mesId));
+        const element = record?.element instanceof HTMLElement
+            ? record.element
+            : getLongChatDomRenderMessageElement(chatElement, mesId);
+
+        if (element instanceof HTMLElement) {
+            elements.push(element);
+        }
+    }
+
+    updateLongChatDomRenderRoleHeightEstimators(state, elements, chat, width);
+}
+
+function updateLongChatDomRenderRoleHeightEstimators(state, elements, chat, width = window.innerWidth) {
+    if (!state || !Array.isArray(chat)) {
+        return;
+    }
+
+    for (const element of elements || []) {
+        if (!(element instanceof HTMLElement)
+            || !element.isConnected
+            || element.classList.contains('bai-bai-toolkit-long-chat-contained')) {
+            continue;
+        }
+
+        const mesId = element.getAttribute('mesid') || '';
+        const index = Number(mesId);
+        if (!mesId || !Number.isInteger(index)) {
+            continue;
+        }
+
+        const message = chat[index] || null;
+        const actualHeight = measureLongChatDomRenderMessageHeight(element);
+        if (actualHeight < 24) {
+            continue;
+        }
+
+        const textInfo = getLongChatDomRenderMessageTextInfo(message);
+        const role = getLongChatDomRenderMessageRole(message);
+        const fallbackHeight = estimateLongChatDomRenderFallbackMessageHeight(textInfo.chars, width, role);
+        if (!Number.isFinite(fallbackHeight) || fallbackHeight <= 0) {
+            continue;
+        }
+
+        const rawScale = actualHeight / fallbackHeight;
+        const safeScale = Math.max(1, Math.min(LONG_CHAT_DOM_RENDER_ESTIMATOR_MAX_SCALE, rawScale));
+        const key = getLongChatDomRenderRoleHeightEstimatorKey(role, width);
+        const previous = state.roleHeightEstimators.get(key);
+        const previousScale = Number(previous?.scale || 1);
+        const scale = previous
+            ? previousScale + (Math.max(0, safeScale - previousScale) * LONG_CHAT_DOM_RENDER_ESTIMATOR_ALPHA)
+            : safeScale;
+
+        state.roleHeightEstimators.set(key, {
+            role,
+            widthBucket: getLongChatDomRenderWidthBucket(width),
+            scale,
+            samples: Math.min(1000, Number(previous?.samples || 0) + 1),
+            updatedAt: Date.now(),
+        });
+
+        const record = state.messageRecords?.get?.(mesId);
+        if (record) {
+            record.role = role;
+            record.textChars = textInfo.chars;
+            record.messageSignature = textInfo.signature;
+            record.sampleHeight = actualHeight;
+        }
+
+        setLongChatDomRenderCachedHeight(mesId, actualHeight);
+    }
+}
+
+function getLongChatDomRenderRoleHeightEstimatorKey(role, width = window.innerWidth) {
+    return `${getLongChatDomRenderNormalizedRole(role)}:${getLongChatDomRenderWidthBucket(width)}`;
+}
+
+function getLongChatDomRenderRoleHeightEstimator(role, width = window.innerWidth) {
+    const state = getLongChatDomRenderState();
+    return state.roleHeightEstimators?.get?.(getLongChatDomRenderRoleHeightEstimatorKey(role, width)) || null;
+}
+
+function getLongChatDomRenderWidthBucket(width = window.innerWidth) {
+    return Math.max(0, Math.round(Number(width || 0) / LONG_CHAT_DOM_RENDER_WIDTH_BUCKET_SIZE));
+}
+
+function getLongChatDomRenderNormalizedRole(role) {
+    return role === 'user' ? 'user' : 'assistant';
+}
+
+function rebuildLongChatDomRenderIndex(state, chatElement, messages, chat) {
+    const previousRecords = state.messageRecords instanceof Map ? state.messageRecords : new Map();
+    const nextRecords = new Map();
+    let totalTextChars = 0;
+    let maxVisibleChars = 0;
+    let maxVisibleMesId = 'none';
+
+    state.indexChatId = String(getCurrentChatId?.() ?? '');
+    state.indexChatElement = chatElement;
+
+    for (const element of messages) {
+        const mesId = element.getAttribute('mesid') || '';
+        if (!mesId) {
+            continue;
+        }
+
+        const index = Number(mesId);
+        const message = Number.isInteger(index) ? chat[index] : null;
+        const textInfo = getLongChatDomRenderMessageTextInfo(message);
+        const role = getLongChatDomRenderMessageRole(message);
+        const previous = previousRecords.get(mesId);
+        const record = previous || { mesId };
+
+        if (previous?.element instanceof HTMLElement && previous.element !== element) {
+            unobserveLongChatDomRenderMessage(previous.element, previous, state);
+        }
+
+        record.mesId = mesId;
+        record.element = element;
+        record.textChars = textInfo.chars;
+        record.messageSignature = textInfo.signature;
+        record.role = role;
+        nextRecords.set(mesId, record);
+
+        totalTextChars += textInfo.chars;
+        if (textInfo.chars > maxVisibleChars) {
+            maxVisibleChars = textInfo.chars;
+            maxVisibleMesId = mesId || 'none';
+        }
+    }
+
+    for (const [mesId, record] of previousRecords.entries()) {
+        if (!nextRecords.has(mesId) && record?.element instanceof HTMLElement) {
+            unobserveLongChatDomRenderMessage(record.element, record, state);
+        }
+    }
+
+    state.messageRecords = nextRecords;
+    state.messageCount = nextRecords.size;
+    state.totalTextChars = totalTextChars;
+    state.maxVisibleChars = maxVisibleChars;
+    state.maxVisibleMesId = maxVisibleMesId;
+    state.indexReady = true;
+}
+
+function syncLongChatDomRenderRecord(state, element, chat) {
+    if (!(element instanceof HTMLElement)) {
+        return null;
+    }
+
+    const mesId = element.getAttribute('mesid') || '';
+    const index = Number(mesId);
+    if (!mesId || !Number.isInteger(index)) {
+        return null;
+    }
+
+    const message = chat[index] || null;
+    const textInfo = getLongChatDomRenderMessageTextInfo(message);
+    const role = getLongChatDomRenderMessageRole(message);
+    const records = state.messageRecords instanceof Map ? state.messageRecords : new Map();
+    const previous = records.get(mesId);
+    const record = previous || { mesId };
+
+    if (previous?.element instanceof HTMLElement && previous.element !== element) {
+        unobserveLongChatDomRenderMessage(previous.element, previous, state);
+        record.appliedSignature = '';
+    }
+
+    if (!previous) {
+        state.totalTextChars = Number(state.totalTextChars || 0) + textInfo.chars;
+        updateLongChatDomRenderMaxStatsAfterRecordChange(state, mesId, 0, textInfo.chars);
+    } else if (Number(previous.textChars || 0) !== textInfo.chars) {
+        const previousChars = Number(previous.textChars || 0);
+        state.totalTextChars = Math.max(0, Number(state.totalTextChars || 0) - previousChars + textInfo.chars);
+        updateLongChatDomRenderMaxStatsAfterRecordChange(state, mesId, previousChars, textInfo.chars);
+    }
+
+    record.mesId = mesId;
+    record.element = element;
+    record.textChars = textInfo.chars;
+    record.messageSignature = textInfo.signature;
+    record.role = role;
+    records.set(mesId, record);
+    state.messageRecords = records;
+    state.messageCount = records.size;
+
+    return record;
+}
+
+function updateLongChatDomRenderMaxStatsAfterRecordChange(state, mesId, previousChars, nextChars) {
+    if (String(state.maxVisibleMesId || '') === String(mesId)) {
+        if (nextChars >= previousChars) {
+            state.maxVisibleChars = nextChars;
+            return;
+        }
+        recomputeLongChatDomRenderMaxStats(state);
+        return;
+    }
+
+    if (nextChars > Number(state.maxVisibleChars || 0)) {
+        state.maxVisibleChars = nextChars;
+        state.maxVisibleMesId = mesId;
+    }
+}
+
+function recomputeLongChatDomRenderMaxStats(state) {
+    let maxVisibleChars = 0;
+    let maxVisibleMesId = 'none';
+
+    for (const record of state.messageRecords?.values?.() || []) {
+        const chars = Number(record?.textChars || 0);
+        if (chars > maxVisibleChars) {
+            maxVisibleChars = chars;
+            maxVisibleMesId = record.mesId || 'none';
+        }
+    }
+
+    state.maxVisibleChars = maxVisibleChars;
+    state.maxVisibleMesId = maxVisibleMesId;
+}
+
+function getLongChatDomRenderIndexStats(state) {
+    return {
+        visibleTextChars: Number(state.totalTextChars || 0),
+        maxVisibleChars: Number(state.maxVisibleChars || 0),
+        maxVisibleMesId: state.maxVisibleMesId || 'none',
+    };
+}
+
+function isLongChatDomRenderIndexReady(state, chatElement) {
+    return Boolean(
+        state?.indexReady
+        && state.indexChatElement === chatElement
+        && String(state.indexChatId || '') === String(getCurrentChatId?.() ?? ''),
+    );
+}
+
+function resetLongChatDomRenderIndex(state = getLongChatDomRenderState()) {
+    for (const record of state.messageRecords?.values?.() || []) {
+        if (record?.element instanceof HTMLElement) {
+            unobserveLongChatDomRenderMessage(record.element, record, state);
+        }
+    }
+
+    state.messageRecords = new Map();
+    state.pendingMessageIds = new Set();
+    state.tailMessageIds = new Set();
+    state.pendingRefreshMode = '';
+    state.messageCount = 0;
+    state.totalTextChars = 0;
+    state.maxVisibleChars = 0;
+    state.maxVisibleMesId = 'none';
+    state.indexChatId = '';
+    state.indexChatElement = null;
+    state.indexReady = false;
+    state.optimized = false;
+}
+
+function normalizeLongChatDomRenderMessageIds(values = []) {
+    const rawValues = Array.isArray(values) ? values : [values];
+    const ids = [];
+    const seen = new Set();
+
+    for (const value of rawValues) {
+        const rawId = value && typeof value === 'object'
+            ? value.messageId ?? value.mesId ?? value.id
+            : value;
+        const numberId = Number(rawId);
+        const id = Number.isInteger(numberId) && numberId >= 0
+            ? String(numberId)
+            : String(rawId ?? '').trim();
+
+        if (!id || seen.has(id)) {
+            continue;
+        }
+
+        seen.add(id);
+        ids.push(id);
+    }
+
+    return ids;
+}
+
+function getLongChatDomRenderMessageElement(chatElement, mesId) {
+    if (!(chatElement instanceof HTMLElement)) {
+        return null;
+    }
+
+    const escapedMesId = String(mesId).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return chatElement.querySelector(`.mes[mesid="${escapedMesId}"]`);
+}
+
+function getLongChatDomRenderTailMessageIdsForChat(chatLength = 0) {
+    const ids = new Set();
+    const numericChatLength = Number(chatLength || 0);
+    const tailStartIndex = Math.max(0, numericChatLength - LONG_CHAT_DOM_RENDER_UNCONTAINED_TAIL_MESSAGES);
+
+    for (let index = tailStartIndex; index < numericChatLength; index += 1) {
+        ids.add(String(index));
+    }
+
+    return ids;
+}
+
+function getLongChatDomRenderMessageIdsFromElements(elements) {
+    const ids = new Set();
+
+    for (const element of elements || []) {
+        const mesId = element instanceof HTMLElement ? element.getAttribute('mesid') : '';
+        if (mesId) {
+            ids.add(String(mesId));
+        }
+    }
+
+    return ids;
 }
 
 function shouldOptimizeLongChatDomRender(stats, messageCount) {
@@ -614,8 +1107,9 @@ function applyLongChatDomRenderToMessage(element, chat, refreshStats = null, opt
         return;
     }
 
+    const record = options.record || null;
     if (options.editingMessages?.has(element)) {
-        cleanupLongChatDomRenderMessage(element);
+        cleanupLongChatDomRenderMessage(element, record);
         if (refreshStats) {
             refreshStats.editing += 1;
         }
@@ -625,12 +1119,29 @@ function applyLongChatDomRenderToMessage(element, chat, refreshStats = null, opt
     const mesId = element.getAttribute('mesid') || '';
     const index = Number(mesId);
     const message = Number.isInteger(index) ? chat[index] : null;
-    const chars = getLongChatMessageTextLength(message);
+    const role = record?.role || getLongChatDomRenderMessageRole(message);
+    const chars = Number(record?.textChars ?? getLongChatMessageTextLength(message));
+    const applySignature = getLongChatDomRenderApplySignature(record, chars, options.chatWidth, role);
+    const appliedHeight = element.style.getPropertyValue(LONG_CHAT_DOM_RENDER_HEIGHT_VAR);
+
+    if (
+        record
+        && record.appliedSignature === applySignature
+        && record.contained === true
+        && element.classList.contains('bai-bai-toolkit-long-chat-contained')
+        && appliedHeight
+    ) {
+        if (refreshStats) {
+            refreshStats.skipped += 1;
+        }
+        return;
+    }
+
     const measuredHeight = element.classList.contains('bai-bai-toolkit-long-chat-contained')
         ? 0
         : measureLongChatDomRenderMessageHeight(element);
     const cachedHeight = getLongChatDomRenderCachedHeight(mesId);
-    const estimatedHeight = estimateLongChatDomRenderMessageHeight(chars, options.chatWidth);
+    const estimatedHeight = estimateLongChatDomRenderMessageHeight(chars, options.chatWidth, role);
     const height = measuredHeight || cachedHeight || estimatedHeight;
 
     if (refreshStats) {
@@ -649,9 +1160,23 @@ function applyLongChatDomRenderToMessage(element, chat, refreshStats = null, opt
     }
 
     element.classList.add('bai-bai-toolkit-long-chat-contained');
+    if (record) {
+        record.appliedSignature = applySignature;
+        record.contained = true;
+        record.role = role;
+    }
     if (refreshStats) {
         refreshStats.contained += 1;
     }
+}
+
+function getLongChatDomRenderApplySignature(record, chars, width = window.innerWidth, role = 'assistant') {
+    const widthBucket = Math.max(0, Math.round(Number(width || 0) / LONG_CHAT_DOM_RENDER_WIDTH_BUCKET_SIZE));
+    return [
+        getLongChatDomRenderNormalizedRole(role || record?.role),
+        record?.messageSignature || `chars:${Number(chars || 0)}`,
+        `width:${widthBucket}`,
+    ].join('|');
 }
 
 function getLongChatDomRenderUncontainedTailMessages(messages, chatLength = 0) {
@@ -692,12 +1217,30 @@ function getLongChatDomRenderEditingMessages(chatElement) {
     return messages;
 }
 
-function estimateLongChatDomRenderMessageHeight(chars, width = window.innerWidth) {
-    const charsPerLine = Math.max(22, Math.min(80, Math.floor((width || 720) / 16)));
-    const lines = Math.max(1, Math.ceil(Number(chars || 0) / charsPerLine));
-    const estimated = 230 + (lines * 28);
+function estimateLongChatDomRenderMessageHeight(chars, width = window.innerWidth, role = 'assistant') {
+    const fallbackHeight = estimateLongChatDomRenderFallbackMessageHeight(chars, width, role);
+    const estimator = getLongChatDomRenderRoleHeightEstimator(role, width);
+    const calibratedScale = Math.max(1, Number(estimator?.scale || 1));
+    const estimated = (fallbackHeight * calibratedScale * LONG_CHAT_DOM_RENDER_ESTIMATE_SAFETY_MULTIPLIER)
+        + LONG_CHAT_DOM_RENDER_ESTIMATE_EXTRA_PX;
 
-    return Math.max(120, Math.min(12000, estimated));
+    return Math.max(120, Math.min(LONG_CHAT_DOM_RENDER_ESTIMATE_MAX_HEIGHT, Math.ceil(estimated)));
+}
+
+function estimateLongChatDomRenderFallbackMessageHeight(chars, width = window.innerWidth, role = 'assistant') {
+    const normalizedRole = getLongChatDomRenderNormalizedRole(role);
+    const charsPerLine = getLongChatDomRenderEstimatedCharsPerLine(width);
+    const lines = Math.max(1, Math.ceil(Number(chars || 0) / charsPerLine));
+    const baseHeight = normalizedRole === 'user' ? 180 : 260;
+    const lineHeight = normalizedRole === 'user' ? 30 : 32;
+    const minHeight = normalizedRole === 'user' ? 140 : 190;
+    const estimated = baseHeight + (lines * lineHeight);
+
+    return Math.max(minHeight, estimated);
+}
+
+function getLongChatDomRenderEstimatedCharsPerLine(width = window.innerWidth) {
+    return Math.max(22, Math.min(80, Math.floor((width || 720) / 16)));
 }
 
 function measureLongChatDomRenderMessageHeight(element) {
@@ -806,15 +1349,54 @@ function cleanupLongChatDomRenderMessages() {
     for (const element of document.querySelectorAll('#chat .mes.bai-bai-toolkit-long-chat-contained')) {
         cleanupLongChatDomRenderMessage(element);
     }
+    resetLongChatDomRenderIndex();
 }
 
-function cleanupLongChatDomRenderMessage(element) {
+function cleanupLongChatDomRenderMessage(element, record = null) {
     if (!(element instanceof HTMLElement)) {
         return;
     }
 
     element.classList.remove('bai-bai-toolkit-long-chat-contained');
     element.style.removeProperty(LONG_CHAT_DOM_RENDER_HEIGHT_VAR);
+
+    if (record) {
+        record.appliedSignature = '';
+        record.contained = false;
+    }
+}
+
+function observeLongChatDomRenderMessage(element, record, state = getLongChatDomRenderState()) {
+    if (!(element instanceof HTMLElement) || !state.resizeObserver) {
+        return;
+    }
+
+    if (record?.observedElement === element && record?.resizeObserver === state.resizeObserver) {
+        return;
+    }
+
+    state.resizeObserver.observe(element);
+
+    if (record) {
+        record.observedElement = element;
+        record.resizeObserver = state.resizeObserver;
+    }
+}
+
+function unobserveLongChatDomRenderMessage(element, record = null, state = getLongChatDomRenderState()) {
+    const observedElement = record?.observedElement instanceof HTMLElement
+        ? record.observedElement
+        : element;
+    const observer = record?.resizeObserver || state.resizeObserver;
+
+    if (observedElement instanceof HTMLElement && observer) {
+        observer.unobserve(observedElement);
+    }
+
+    if (record) {
+        record.observedElement = null;
+        record.resizeObserver = null;
+    }
 }
 
 function isLongChatDomRenderGenerationActive() {
@@ -1192,6 +1774,12 @@ function getLongChatDomRenderLatestMessageElement(chat) {
     return messages[messages.length - 1] ?? null;
 }
 
+function getLongChatDomRenderLatestMessageId() {
+    const chat = document.querySelector('#chat');
+    const latestMessage = getLongChatDomRenderLatestMessageElement(chat);
+    return latestMessage instanceof HTMLElement ? latestMessage.getAttribute('mesid') : '';
+}
+
 function getLongChatDomRenderLatestMessageStartScrollTop(chat, message) {
     const currentTop = chat.scrollTop;
     const chatRect = chat.getBoundingClientRect();
@@ -1209,25 +1797,29 @@ function getLongChatDomRenderLatestMessageStartScrollTop(chat, message) {
     return Math.max(0, Math.min(Math.round(rawTop), maxTop));
 }
 
-function getLongChatMessageTextLength(message) {
+function getLongChatDomRenderMessageTextInfo(message) {
     if (!message || typeof message !== 'object') {
-        return 0;
+        return { chars: 0, signature: 'empty' };
     }
 
     let rawText = '';
+    let source = 'none';
 
     // Prefer translated text if available, fallback to original message
     if (typeof message.extra?.display_text === 'string' && message.extra.display_text.trim().length > 0) {
         rawText = message.extra.display_text;
+        source = 'display';
     } else if (typeof message.mes === 'string') {
         rawText = message.mes;
+        source = 'mes';
     }
 
     let length = 0;
+    let processedText = '';
     if (rawText) {
         // Strip <think> and <details> blocks out of the length calculation
         // since they are usually folded/hidden and don't contribute to standard reading height
-        let processedText = rawText
+        processedText = rawText
             .replace(/<think[ing]*>[\s\S]*?<\/think[ing]*>/gi, '')
             .replace(/<details[\s\S]*?>[\s\S]*?<\/details>/gi, '');
 
@@ -1235,11 +1827,52 @@ function getLongChatMessageTextLength(message) {
     }
 
     // Add a fixed small length penalty if reasoning text exists (representing folded summary)
-    if (typeof message.extra?.reasoning === 'string' || typeof message.extra?.reasoning_display_text === 'string') {
+    const reasoningText = typeof message.extra?.reasoning_display_text === 'string'
+        ? message.extra.reasoning_display_text
+        : typeof message.extra?.reasoning === 'string'
+            ? message.extra.reasoning
+            : '';
+    if (reasoningText) {
         length += 50;
     }
 
-    return length;
+    return {
+        chars: length,
+        signature: [
+            source,
+            processedText.length,
+            hashLongChatDomRenderStringSample(processedText),
+            reasoningText.length,
+            hashLongChatDomRenderStringSample(reasoningText),
+        ].join(':'),
+    };
+}
+
+function getLongChatMessageTextLength(message) {
+    return getLongChatDomRenderMessageTextInfo(message).chars;
+}
+
+function hashLongChatDomRenderStringSample(value) {
+    const text = String(value || '');
+    if (!text) {
+        return '0';
+    }
+
+    const sample = text.length <= 1024
+        ? text
+        : `${text.slice(0, 512)}\n${text.slice(-512)}`;
+    let hash = 0x811c9dc5;
+
+    for (let index = 0; index < sample.length; index += 1) {
+        hash ^= sample.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+    }
+
+    return (hash >>> 0).toString(36);
+}
+
+function getLongChatDomRenderMessageRole(message) {
+    return message?.is_user === true ? 'user' : 'assistant';
 }
 
 function isWelcomeRecentChatDirectOpenCompatibilityMode() {

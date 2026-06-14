@@ -22,7 +22,7 @@ import { sendMessageAs } from '../../../slash-commands.js';
 import { isAdmin } from '../../../user.js';
 import { debounce, download, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4 } from '../../../utils.js';
 import { getCurrentPresetAPI as getRegexCurrentPresetAPI, getCurrentPresetName as getRegexCurrentPresetName, getScriptsByType as getRegexScriptsByType, runRegexScript, SCRIPT_TYPES as REGEX_SCRIPT_TYPES, substitute_find_regex } from '../../regex/engine.js';
-const CURRENT_VERSION = '0.25.9';
+const CURRENT_VERSION = '0.26';
 const LOCAL_ASSET_VERSION = getLocalAssetVersion(CURRENT_VERSION);
 const { SaveGenerateDisplay } = await importVersionedLocalModule('./saveGenerateDisplay.js');
 const chatOptimizations = await importVersionedLocalModule('./chatOptimizations.js');
@@ -76,6 +76,7 @@ const SAVE_GENERATE_DEFAULT_ENABLED_MIGRATION_KEY = 'saveGenerateDefaultEnabledM
 const SAVE_GENERATE_BACKEND_CHECK_TTL_MS = 60_000;
 const SAVE_GENERATE_BACKEND_MISSING_RECHECK_MS = 10_000;
 const SAVE_GENERATE_BACKEND_CHECK_TIMEOUT_MS = 1500;
+const SAVE_GENERATE_LOCAL_REQUEST_GUARD_RELEASE_DELAY_MS = 1000;
 const SAVE_REQUEST_GZIP_FETCH_KEY = '__baiBaiToolkitSaveRequestGzipFetchPatched';
 const FAST_CHAT_GET_FETCH_KEY = '__baiBaiToolkitFastChatGetFetchPatched';
 const FAST_CHAT_GET_JQUERY_TRIGGER_GUARD_KEY = '__baiBaiToolkitFastChatGetJQueryTriggerGuardPatched';
@@ -1778,6 +1779,7 @@ function recordPerformanceTraceLongDomRefresh(info) {
             `tail=${info.tail || 0}`,
             `cached=${info.cached || 0}`,
             `estimated=${info.estimated || 0}`,
+            `skipped=${info.skipped || 0}`,
         ].join(' '),
         { key: `longdom:${reason}`, dedupeMs: 80 },
     );
@@ -11907,6 +11909,10 @@ function installSaveGenerateFetchHook() {
         if (!(existing.localTerminalWatchJobIds instanceof Set)) {
             existing.localTerminalWatchJobIds = new Set();
         }
+        if (!(existing.localRequestGuards instanceof Map)) {
+            existing.localRequestGuards = new Map();
+        }
+        existing.localRequestGuardSerial = Number(existing.localRequestGuardSerial || 0);
         if (!Array.isArray(existing.saveGenerateIntents)) {
             existing.saveGenerateIntents = [];
         }
@@ -11948,6 +11954,8 @@ function installSaveGenerateFetchHook() {
         resumeCheckPromises: new Map(),
         recoveryLocks: new Map(),
         localTerminalWatchJobIds: new Set(),
+        localRequestGuards: new Map(),
+        localRequestGuardSerial: 0,
         saveGenerateIntents: [],
         saveGenerateIntentSerial: 0,
         backendAvailable: null,
@@ -11967,6 +11975,7 @@ function installSaveGenerateFetchHook() {
     };
 
     state.wrappedFetch = async function baiBaiToolkitSaveGenerateFetch(input, init) {
+        let localRequestGuard = null;
         try {
             const skippedSaveResponse = await maybeHandleSaveGenerateSaveRequest(state, input, init);
             if (skippedSaveResponse) {
@@ -11982,20 +11991,30 @@ function installSaveGenerateFetchHook() {
                 return state.originalFetch(input, init);
             }
 
+            localRequestGuard = markSaveGenerateLocalRequestGuard(state, requestInfo.save?.chatId);
+
             if (!await isSaveGenerateBackendAvailable(state)) {
                 console.debug(`${LOG_PREFIX} save-generate skipped: BaiBaoKu backend is unavailable`);
-                return state.originalFetch(input, init);
+                const response = await state.originalFetch(input, init);
+                return guardSaveGenerateResponseUntilBodyDone(state, localRequestGuard, response);
             }
 
             const recoveryBlockResponse = await maybeBlockSaveGenerateRequestForRecovery(state, requestInfo);
             if (recoveryBlockResponse) {
-                return recoveryBlockResponse;
+                return guardSaveGenerateResponseUntilBodyDone(state, localRequestGuard, recoveryBlockResponse);
             }
 
-            return await fetchSaveGenerate(state, requestInfo, input, init);
+            const response = await fetchSaveGenerate(state, requestInfo, input, init);
+            return guardSaveGenerateResponseUntilBodyDone(state, localRequestGuard, response);
         } catch (error) {
             console.debug(`${LOG_PREFIX} save-generate path failed; falling back to native fetch`, error);
-            return state.originalFetch(input, init);
+            try {
+                const response = await state.originalFetch(input, init);
+                return guardSaveGenerateResponseUntilBodyDone(state, localRequestGuard, response);
+            } catch (fallbackError) {
+                clearSaveGenerateLocalRequestGuard(state, localRequestGuard);
+                throw fallbackError;
+            }
         }
     };
 
@@ -12629,6 +12648,110 @@ function forgetSaveGenerateActiveChat(state, chatId) {
     state.activeGenerateChatIds.delete(chatId);
 }
 
+function markSaveGenerateLocalRequestGuard(state, chatId) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!state || !normalizedChatId) {
+        return null;
+    }
+
+    if (!(state.localRequestGuards instanceof Map)) {
+        state.localRequestGuards = new Map();
+    }
+
+    state.localRequestGuardSerial = Number(state.localRequestGuardSerial || 0) + 1;
+    const guard = {
+        id: state.localRequestGuardSerial,
+        chatId: normalizedChatId,
+        createdAt: Date.now(),
+    };
+    state.localRequestGuards.set(normalizedChatId, guard);
+    return guard;
+}
+
+function clearSaveGenerateLocalRequestGuard(state, guard) {
+    if (!state || !guard?.chatId || !(state.localRequestGuards instanceof Map)) {
+        return;
+    }
+
+    const activeGuard = state.localRequestGuards.get(guard.chatId);
+    if (!activeGuard || activeGuard.id !== guard.id) {
+        return;
+    }
+
+    state.localRequestGuards.delete(guard.chatId);
+}
+
+function isSaveGenerateLocalRequestGuarded(state, chatId) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId || !(state?.localRequestGuards instanceof Map)) {
+        return false;
+    }
+
+    const guard = state.localRequestGuards.get(normalizedChatId);
+    if (!guard) {
+        return false;
+    }
+
+    if (Date.now() - Number(guard.createdAt || 0) > SAVE_GENERATE_POLL_TIMEOUT_MS) {
+        state.localRequestGuards.delete(normalizedChatId);
+        return false;
+    }
+
+    return true;
+}
+
+function guardSaveGenerateResponseUntilBodyDone(state, guard, response) {
+    if (!guard) {
+        return response;
+    }
+
+    if (!(response instanceof Response) || !response.ok || !response.body || typeof ReadableStream === 'undefined') {
+        clearSaveGenerateLocalRequestGuard(state, guard);
+        return response;
+    }
+
+    const reader = response.body.getReader();
+    let released = false;
+    const release = (delayMs = 0) => {
+        if (released) {
+            return;
+        }
+        released = true;
+        setTimeout(() => clearSaveGenerateLocalRequestGuard(state, guard), Math.max(0, Number(delayMs || 0)));
+    };
+
+    const guardedBody = new ReadableStream({
+        async pull(controller) {
+            try {
+                const { done, value } = await reader.read();
+                if (done) {
+                    controller.close();
+                    release(SAVE_GENERATE_LOCAL_REQUEST_GUARD_RELEASE_DELAY_MS);
+                    return;
+                }
+                controller.enqueue(value);
+            } catch (error) {
+                release();
+                controller.error(error);
+            }
+        },
+        async cancel(reason) {
+            release();
+            try {
+                await reader.cancel(reason);
+            } catch {
+                // Ignore cancel cleanup failures from the browser stream.
+            }
+        },
+    });
+
+    return new Response(guardedBody, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+    });
+}
+
 function cleanupSaveGenerateRecords(state) {
     const now = Date.now();
     state.pendingJobs = state.pendingJobs.filter(record => {
@@ -13051,6 +13174,11 @@ async function runCurrentSaveGenerateJobCheck(state, chatId, reason = 'unknown',
 
     if (isSaveGenerateActiveLocalChat(state, chatId)) {
         console.debug(`${LOG_PREFIX} save-generate resume check skipped: current page is generating this chat (${reason})`);
+        return null;
+    }
+
+    if (reason !== 'generate-fetch' && isSaveGenerateLocalRequestGuarded(state, chatId)) {
+        console.debug(`${LOG_PREFIX} save-generate resume check skipped: local generate request is pending (${reason})`);
         return null;
     }
 
