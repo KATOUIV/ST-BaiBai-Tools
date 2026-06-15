@@ -53,9 +53,14 @@ const PRESET_VUE_MODULE_PATH = './vendor/vue.esm-browser.prod.js';
 const PRESET_VUE_DRAGGABLE_MODULE_PATH = './vendor/vue-draggable-next.esm-browser.prod.js';
 const PRESET_VUE_HEADER_ENTRY_ID = '__bai_bai_preset_header';
 const PRESET_VUE_SEPARATOR_ENTRY_ID = '__bai_bai_preset_separator';
+const PRESET_VUE_GLOBAL_LIBRARY_ENTRY_ID = '__bai_bai_preset_global_library';
 const PRESET_VUE_FAVORITES_ENTRY_ID = '__bai_bai_preset_favorites';
 const PRESET_GROUP_EXTENSION_PATH = 'baibaiToolkit.presetPromptGroups';
 const PRESET_FAVORITES_EXTENSION_PATH = 'baibaiToolkit.presetPromptFavorites';
+const PRESET_GLOBAL_LIBRARY_DATABASE = 'bai-bai-toolkit';
+const PRESET_GLOBAL_LIBRARY_STORE = 'preset-global-prompts';
+const PRESET_GLOBAL_LIBRARY_KEY = 'library';
+const PRESET_GLOBAL_LIBRARY_VERSION = 1;
 const PRESET_COMPAT_ENTRY_GROUPING_EXTENSION_PATH = 'entryGrouping';
 const PRESET_VUE_EXPAND_ANIMATION_MS = 180;
 const PRESET_VUE_COLLAPSE_ANIMATION_MS = 260;
@@ -2208,6 +2213,14 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     cursor: default !important;
 }
 
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-global-library-prompt .bai-bai-preset-global-library-row-marker {
+    cursor: default !important;
+}
+
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_READY_CLASS} .bai-bai-preset-global-library-prompt .bai-bai-preset-global-library-row-marker {
+    cursor: default !important;
+}
+
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-prompt-favorite-toggle-active {
     color: #f5c542 !important;
     opacity: 1 !important;
@@ -2217,6 +2230,7 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     opacity: 0.48;
 }
 
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-global-library,
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group {
     display: flex;
     flex-direction: column;
@@ -2229,6 +2243,7 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     transition: gap ${PRESET_VUE_EXPAND_ANIMATION_MS}ms ease, opacity ${PRESET_VUE_EXPAND_ANIMATION_MS}ms ease;
 }
 
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-global-library-collapsed,
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-collapsed {
     gap: 0;
     transition-duration: ${PRESET_VUE_COLLAPSE_ANIMATION_MS}ms;
@@ -2256,6 +2271,7 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     touch-action: manipulation;
 }
 
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-global-library-collapsed .bai-bai-preset-group-header,
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-collapsed .bai-bai-preset-group-header {
     border-bottom-color: transparent;
 }
@@ -2316,6 +2332,7 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     transition: transform ${PRESET_VUE_EXPAND_ANIMATION_MS}ms ease;
 }
 
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-global-library-collapsed .bai-bai-preset-group-toggle,
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-collapsed .bai-bai-preset-group-toggle {
     transform: rotate(-90deg);
     transition-duration: ${PRESET_VUE_COLLAPSE_ANIMATION_MS}ms;
@@ -2467,6 +2484,7 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     transition: grid-template-rows ${PRESET_VUE_EXPAND_ANIMATION_MS}ms ease;
 }
 
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-global-library-collapsed .bai-bai-preset-group-body,
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-collapsed .bai-bai-preset-group-body {
     grid-template-rows: 0fr;
     pointer-events: none;
@@ -2492,6 +2510,334 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-list-empty {
     min-height: 12px;
     border: 1px dashed color-mix(in srgb, var(--SmartThemeBorderColor) 70%, transparent);
+}
+
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-global-library-empty {
+    padding: 8px 10px;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.65;
+    font-size: calc(var(--mainFontSize) * 0.92);
+    overflow-wrap: anywhere;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    width: 100%;
+    inline-size: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin: var(${PRESET_VUE_LIST_GAP_VARIABLE}, 6px) 0 var(${PRESET_VUE_LIST_GAP_VARIABLE}, 6px);
+    padding: 0;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 45%, transparent);
+    overflow: hidden;
+    transition: gap ${PRESET_VUE_EXPAND_ANIMATION_MS}ms ease, opacity ${PRESET_VUE_EXPAND_ANIMATION_MS}ms ease;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside.bai-bai-preset-global-library-collapsed {
+    gap: 0;
+    transition-duration: ${PRESET_VUE_COLLAPSE_ANIMATION_MS}ms;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-group-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    padding: 10px 7px;
+    border: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 70%, transparent);
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 75%, transparent);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside.bai-bai-preset-global-library-collapsed .bai-bai-preset-group-header {
+    border-bottom-color: transparent;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-group-title,
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-group-title-content {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    white-space: normal;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-group-title-content {
+    flex-wrap: wrap;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-group-toggle,
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-prompt-action-button {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    flex: 0 0 calc(var(--mainFontSize) * 1.65) !important;
+    inline-size: calc(var(--mainFontSize) * 1.65) !important;
+    block-size: calc(var(--mainFontSize) * 1.65) !important;
+    min-inline-size: calc(var(--mainFontSize) * 1.65) !important;
+    min-block-size: calc(var(--mainFontSize) * 1.65) !important;
+    box-sizing: border-box !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    line-height: 1 !important;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-group-toggle {
+    transform: rotate(0deg);
+    transform-origin: center;
+    transition: transform ${PRESET_VUE_EXPAND_ANIMATION_MS}ms ease;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside.bai-bai-preset-global-library-collapsed .bai-bai-preset-group-toggle {
+    transform: rotate(-90deg);
+    transition-duration: ${PRESET_VUE_COLLAPSE_ANIMATION_MS}ms;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-group-body {
+    display: grid;
+    grid-template-rows: 1fr;
+    min-height: 0;
+    overflow: hidden;
+    transition: grid-template-rows ${PRESET_VUE_EXPAND_ANIMATION_MS}ms ease;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside.bai-bai-preset-global-library-collapsed .bai-bai-preset-group-body {
+    grid-template-rows: 0fr;
+    pointer-events: none;
+    transition-duration: ${PRESET_VUE_COLLAPSE_ANIMATION_MS}ms;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-group-body-inner {
+    min-height: 0;
+    overflow: hidden;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-global-library-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(${PRESET_VUE_LIST_GAP_VARIABLE}, 6px);
+    margin: 0;
+    padding: var(${PRESET_VUE_LIST_GAP_VARIABLE}, 6px);
+    list-style: none;
+    min-height: 0;
+    overflow: hidden;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside li.completion_prompt_manager_prompt {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) max-content max-content !important;
+    align-items: center !important;
+    column-gap: 6px !important;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.5em 0.5em 0.5em 20px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    position: relative;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside li.completion_prompt_manager_prompt .completion_prompt_manager_prompt_name {
+    min-width: 0 !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside li.completion_prompt_manager_prompt .prompt_manager_prompt_controls {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    gap: 4px !important;
+    min-inline-size: max-content !important;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside li.completion_prompt_manager_prompt .prompt_manager_prompt_tokens {
+    inline-size: max-content !important;
+    min-inline-size: 2.2em !important;
+    width: auto !important;
+    justify-self: end !important;
+    text-align: right;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-global-library-row-marker {
+    position: absolute;
+    height: 100%;
+    top: 0;
+    padding: 0 5px;
+    display: flex !important;
+    align-items: center;
+    cursor: default !important;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-global-library-empty {
+    padding: 8px 10px;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.65;
+    font-size: calc(var(--mainFontSize) * 0.92);
+    overflow-wrap: anywhere;
+}
+
+#completion_prompt_manager.bai-bai-preset-global-library-dialog-host {
+    position: relative;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-layer {
+    position: fixed;
+    inset: auto;
+    top: var(--bai-bai-preset-global-library-dialog-top, 0);
+    left: var(--bai-bai-preset-global-library-dialog-left, 0);
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--bai-bai-preset-global-library-dialog-width, 100vw);
+    block-size: var(--bai-bai-preset-global-library-dialog-height, 100dvh);
+    min-height: 0;
+    padding: 10px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 46%, transparent);
+    backdrop-filter: blur(2px);
+    animation: bai-bai-preset-global-library-layer-in 0.14s ease both;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(100%, 420px);
+    max-height: min(78vh, 560px);
+    padding: 12px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: var(--SmartThemeBlurTintColor);
+    box-shadow: 0 12px 32px color-mix(in srgb, #000 28%, transparent);
+    animation: bai-bai-preset-global-library-dialog-in 0.18s ease both;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-head,
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-head strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    overflow: auto;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-message {
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-field label {
+    opacity: 0.78;
+    font-size: calc(var(--mainFontSize) * 0.9);
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-field .text_pole,
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-field select {
+    width: 100% !important;
+    min-width: 0 !important;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-field textarea {
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 260px;
+    resize: vertical;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-actions {
+    justify-content: flex-end;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-button {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    flex: 0 0 auto !important;
+    min-width: 4.8em !important;
+    width: auto !important;
+    min-height: calc(var(--mainFontSize) * 2) !important;
+    padding: 0 12px !important;
+    line-height: 1.2 !important;
+    white-space: nowrap !important;
+    max-width: none !important;
+    writing-mode: horizontal-tb !important;
+}
+
+#completion_prompt_manager .bai-bai-preset-global-library-dialog-danger {
+    color: #d86666 !important;
+}
+
+@keyframes bai-bai-preset-global-library-layer-in {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes bai-bai-preset-global-library-dialog-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px) scale(0.97);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@media (max-width: 600px) {
+    #completion_prompt_manager .bai-bai-preset-global-library-dialog-layer {
+        position: fixed;
+        inset: 0;
+        z-index: 50000;
+        inline-size: auto;
+        block-size: auto;
+        min-height: 100dvh;
+        padding: 18px;
+        background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 60%, transparent);
+    }
+
+    #completion_prompt_manager .bai-bai-preset-global-library-dialog {
+        width: min(100%, 420px);
+        max-height: calc(100dvh - 36px);
+    }
 }
 
 body.${PRESET_VUE_DRAGGING_BODY_CLASS} #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-list-empty {
@@ -2533,6 +2879,7 @@ body.${PRESET_VUE_DRAGGING_BODY_CLASS} #completion_prompt_manager ${PRESET_PROMP
     #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-favorites-toggle,
     #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-favorites-body,
     #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-favorites-list,
+    #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-global-library,
     #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group,
     #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-body,
     #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-group-list {
@@ -3038,6 +3385,9 @@ async function installPresetVuePromptListManager() {
         }
         syncPresetVuePromptListManagerState();
         preparePromptManagerCustomDragList(manager.root);
+        void loadPresetGlobalPromptLibrary().catch(error => {
+            console.debug(`${LOG_PREFIX} Failed to load preset global prompt library`, error);
+        });
     })();
 
     try {
@@ -3137,6 +3487,14 @@ function getPresetVuePromptListManagerState() {
             pendingVisibilityTimer: null,
             pendingVisibilityObserver: null,
             groupBodyUnmountTimers: null,
+            globalLibraryCollapsed: false,
+            globalLibraryItems: [],
+            globalLibraryLoaded: false,
+            globalLibraryLoading: false,
+            globalLibraryError: null,
+            globalLibraryLoadPromise: null,
+            globalLibrarySavePromise: null,
+            globalLibraryBridgePromise: null,
             dragReadyFeedbackTimer: null,
             dragReadyFeedbackElement: null,
             dragReadyFeedbackNotified: false,
@@ -3595,6 +3953,7 @@ function patchPromptCollectionAddForPresetGroupGate(collection, poweredOffPrompt
 
 function createPresetVuePromptListModel() {
     return {
+        globalLibrary: null,
         items: [],
         listClassName: `text_pole ${PRESET_DRAG_READY_CLASS}`,
         renderKey: 0,
@@ -3621,6 +3980,7 @@ function syncPresetVuePromptListManagerState() {
     repairPresetPromptOrderDuplicatesIfNeeded();
     repairPresetPromptGroupStateIfNeeded();
     syncCurrentPresetPromptGroupStateToPresetExtensionField({ persist: false });
+    syncPresetVueGlobalLibraryModelState(manager.state);
     manager.state.items = buildPresetVuePromptListItems();
     syncPresetVuePromptGroupBodyMountState(manager.state);
     return true;
@@ -3648,8 +4008,12 @@ function syncPresetVuePromptGroupBodyMountState(model) {
 
     const manager = getPresetVuePromptListManagerState();
     const validGroupIds = new Set();
+    const mountItems = [
+        model.globalLibrary,
+        ...model.items,
+    ].filter(Boolean);
 
-    for (const item of model.items) {
+    for (const item of mountItems) {
         const mountId = getPresetVuePromptBodyMountId(item);
 
         if (!mountId) {
@@ -3684,6 +4048,10 @@ function getPresetVuePromptBodyMountId(item) {
 
     if (item?.type === 'favorites') {
         return PRESET_VUE_FAVORITES_ENTRY_ID;
+    }
+
+    if (item?.type === 'global-library') {
+        return PRESET_VUE_GLOBAL_LIBRARY_ENTRY_ID;
     }
 
     return null;
@@ -3769,7 +4137,10 @@ function schedulePresetVuePromptGroupBodyUnmount(groupId) {
     const timer = setTimeout(() => {
         clearPresetVuePromptGroupBodyUnmountTimer(manager, groupId);
 
-        const groupItem = model.items?.find(item => getPresetVuePromptBodyMountId(item) === groupId);
+        const groupItem = [
+            model.globalLibrary,
+            ...(model.items ?? []),
+        ].find(item => getPresetVuePromptBodyMountId(item) === groupId);
 
         if (!groupItem || groupItem.collapsed) {
             setPresetVuePromptGroupBodyMounted(model, groupId, false);
@@ -3845,6 +4216,54 @@ function repairPresetPromptGroupStateIfNeeded() {
 
     savePresetPromptGroupSettings();
     return true;
+}
+
+function buildPresetVueGlobalLibraryItem() {
+    const manager = getPresetVuePromptListManagerState();
+
+    return {
+        id: PRESET_VUE_GLOBAL_LIBRARY_ENTRY_ID,
+        type: 'global-library',
+        count: getPresetVueGlobalLibraryChildren(manager).length,
+        collapsed: Boolean(manager.globalLibraryCollapsed),
+        loading: Boolean(manager.globalLibraryLoading),
+        error: manager.globalLibraryError ? String(manager.globalLibraryError) : '',
+        children: getPresetVueGlobalLibraryChildren(manager),
+    };
+}
+
+function getPresetVueGlobalLibraryChildren(manager = getPresetVuePromptListManagerState()) {
+    return normalizePresetGlobalPromptLibraryItems(manager.globalLibraryItems)
+        .map(item => ({
+            ...item,
+            type: 'global-library-prompt',
+        }));
+}
+
+function syncPresetVueGlobalLibraryModelState(model) {
+    if (!model) {
+        return;
+    }
+
+    const nextLibrary = buildPresetVueGlobalLibraryItem();
+
+    if (!model.globalLibrary) {
+        model.globalLibrary = nextLibrary;
+        return;
+    }
+
+    const children = Array.isArray(model.globalLibrary.children)
+        ? model.globalLibrary.children
+        : [];
+
+    children.splice(0, children.length, ...nextLibrary.children);
+    model.globalLibrary.id = nextLibrary.id;
+    model.globalLibrary.type = nextLibrary.type;
+    model.globalLibrary.count = nextLibrary.count;
+    model.globalLibrary.collapsed = nextLibrary.collapsed;
+    model.globalLibrary.loading = nextLibrary.loading;
+    model.globalLibrary.error = nextLibrary.error;
+    model.globalLibrary.children = children;
 }
 
 function buildPresetVuePromptListItems() {
@@ -3958,7 +4377,10 @@ function createPresetVuePromptListRootComponent(vue, vueDraggableNext, model) {
     return {
         name: 'BaiBaiPresetPromptListRoot',
         render() {
-            return renderPresetVuePromptDraggable(h, vueDraggableNext, model);
+            return [
+                renderPresetVuePromptGlobalLibrary(h, model.globalLibrary, { outsideList: true }),
+                renderPresetVuePromptDraggable(h, vueDraggableNext, model),
+            ];
         },
     };
 }
@@ -5102,7 +5524,7 @@ function getPresetVuePromptTopLevelContentStartIndex(model) {
     while (index < model.items.length) {
         const type = model.items[index]?.type;
 
-        if (type !== 'header' && type !== 'favorites' && type !== 'separator') {
+        if (type !== 'header' && type !== 'global-library' && type !== 'favorites' && type !== 'separator') {
             break;
         }
 
@@ -5189,6 +5611,10 @@ function renderPresetVuePromptEntry(h, vueDraggableNext, item) {
         return renderPresetVuePromptListSeparator(h);
     }
 
+    if (item?.type === 'global-library') {
+        return renderPresetVuePromptGlobalLibrary(h, item);
+    }
+
     if (item?.type === 'favorites') {
         return renderPresetVuePromptFavorites(h, item);
     }
@@ -5198,6 +5624,128 @@ function renderPresetVuePromptEntry(h, vueDraggableNext, item) {
     }
 
     return renderPresetVuePromptRow(h, item, { topLevel: true });
+}
+
+function renderPresetVuePromptGlobalLibrary(h, item, { outsideList = false } = {}) {
+    if (!item) {
+        return null;
+    }
+
+    const children = Array.isArray(item?.children) ? item.children : [];
+    const model = getPresetVuePromptListManagerState().state;
+    const mounted = isPresetVuePromptGroupBodyMounted(model, item);
+    const tag = outsideList ? 'div' : 'li';
+    const bodyContent = (() => {
+        if (!mounted) {
+            return [];
+        }
+
+        if (item.loading) {
+            return [h('div', { class: 'bai-bai-preset-global-library-empty' }, t`全局库加载中...`)];
+        }
+
+        if (item.error) {
+            return [h('div', { class: 'bai-bai-preset-global-library-empty' }, t`全局库加载失败`)];
+        }
+
+        if (!children.length) {
+            return [h('div', { class: 'bai-bai-preset-global-library-empty' }, t`暂无全局条目`)];
+        }
+
+        return [
+            h('ul', { class: 'bai-bai-preset-group-list bai-bai-preset-global-library-list' }, children.map(child => renderPresetVuePromptGlobalLibraryRow(h, child))),
+        ];
+    })();
+
+    return h(tag, {
+        class: [
+            'bai-bai-preset-global-library',
+            outsideList ? 'bai-bai-preset-global-library-outside' : '',
+            item.collapsed ? 'bai-bai-preset-global-library-collapsed' : '',
+        ],
+        key: PRESET_VUE_GLOBAL_LIBRARY_ENTRY_ID,
+    }, [
+        h('div', {
+            class: 'bai-bai-preset-group-header bai-bai-preset-global-library-header',
+            onClick: event => {
+                event.preventDefault();
+                event.stopPropagation();
+                togglePresetVuePromptGlobalLibraryCollapsed();
+            },
+        }, [
+            h('span', { class: 'bai-bai-preset-group-title', title: t`全局库` }, [
+                h('span', {
+                    class: [
+                        'menu_button',
+                        'bai-bai-preset-group-toggle',
+                        'fa-solid',
+                        'fa-chevron-down',
+                    ],
+                    title: item.collapsed ? t`展开全局库` : t`收起全局库`,
+                }),
+                h('span', { class: 'bai-bai-preset-group-title-content' }, [
+                    h('strong', null, t`全局库`),
+                    h('small', { class: 'bai-bai-preset-group-count' }, `(${children.length})`),
+                ]),
+            ]),
+        ]),
+        h('div', {
+            class: 'bai-bai-preset-group-body',
+            'aria-hidden': item.collapsed ? 'true' : 'false',
+        }, [
+            h('div', { class: 'bai-bai-preset-group-body-inner' }, bodyContent),
+        ]),
+    ]);
+}
+
+function renderPresetVuePromptGlobalLibraryRow(h, item) {
+    const prefix = promptManager?.configuration?.prefix ?? '';
+    const name = item.name || t`未命名条目`;
+
+    return h('li', {
+        class: [
+            `${prefix}prompt_manager_prompt`,
+            'bai-bai-preset-global-library-prompt',
+        ],
+        'data-preset-global-library-id': item.id,
+        key: `global-library:${item.id}`,
+    }, [
+        h('span', {
+            class: 'drag-handle ui-sortable-handle bai-bai-preset-global-library-row-marker',
+            title: t`全局库条目不可拖拽`,
+        }, '\u2630'),
+        h('span', {
+            class: `${prefix}prompt_manager_prompt_name`,
+            title: name,
+            'data-pm-name': name,
+        }, [
+            h('span', null, name),
+        ]),
+        h('span', null, [
+            h('span', { class: 'prompt_manager_prompt_controls' }, [
+                renderPresetVuePromptActionButton(h, {
+                    action: 'global-library-delete',
+                    icon: 'fa-trash',
+                    text: t`删除全局库条目`,
+                    caution: true,
+                    onClick: event => handlePresetPromptActionButtonClick(event),
+                }),
+                renderPresetVuePromptActionButton(h, {
+                    action: 'global-library-edit',
+                    icon: 'fa-pencil',
+                    text: t`编辑全局库条目`,
+                    onClick: event => handlePresetPromptActionButtonClick(event),
+                }),
+                renderPresetVuePromptActionButton(h, {
+                    action: 'global-library-insert',
+                    icon: 'fa-plus',
+                    text: t`添加到当前预设`,
+                    onClick: event => handlePresetPromptActionButtonClick(event),
+                }),
+            ]),
+        ]),
+        h('span', { class: 'prompt_manager_prompt_tokens' }, '-'),
+    ]);
 }
 
 function renderPresetVuePromptFavorites(h, item) {
@@ -6487,6 +7035,473 @@ function getCurrentPresetPromptOrderIds() {
         .filter(Boolean);
 }
 
+function createEmptyPresetGlobalPromptLibrary() {
+    return {
+        version: PRESET_GLOBAL_LIBRARY_VERSION,
+        items: [],
+    };
+}
+
+function normalizePresetGlobalPromptLibrary(value) {
+    const sourceItems = Array.isArray(value)
+        ? value
+        : Array.isArray(value?.items)
+            ? value.items
+            : [];
+
+    return {
+        version: PRESET_GLOBAL_LIBRARY_VERSION,
+        items: normalizePresetGlobalPromptLibraryItems(sourceItems),
+    };
+}
+
+function normalizePresetGlobalPromptLibraryItems(items) {
+    if (!Array.isArray(items)) {
+        return [];
+    }
+
+    const seenIds = new Set();
+    const normalizedItems = [];
+
+    for (const item of items) {
+        if (!item || typeof item !== 'object') {
+            continue;
+        }
+
+        let id = String(item.id || '').trim();
+
+        if (!id || seenIds.has(id)) {
+            id = uuidv4();
+        }
+
+        seenIds.add(id);
+        normalizedItems.push({
+            id,
+            name: normalizePresetGlobalPromptLibraryName(item.name),
+            content: typeof item.content === 'string' ? item.content : String(item.content ?? ''),
+        });
+    }
+
+    return normalizedItems;
+}
+
+function normalizePresetGlobalPromptLibraryName(name) {
+    return String(name || '').trim() || t`未命名条目`;
+}
+
+async function ensureBaiBaoKuBridge() {
+    const existing = globalThis.BaiBaoKu;
+
+    if (existing && typeof existing.database === 'function') {
+        return existing;
+    }
+
+    if (typeof document === 'undefined') {
+        throw new Error('BaiBaoKu frontend bridge is not available.');
+    }
+
+    const manager = getPresetVuePromptListManagerState();
+
+    if (manager.globalLibraryBridgePromise) {
+        return manager.globalLibraryBridgePromise;
+    }
+
+    manager.globalLibraryBridgePromise = new Promise((resolve, reject) => {
+        let settled = false;
+        let timeoutId = null;
+
+        const settle = (callback, value) => {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            window.removeEventListener('baibaoku:ready', handleReady);
+
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+
+            callback(value);
+        };
+        const handleReady = event => {
+            const bridge = event?.detail || globalThis.BaiBaoKu;
+
+            if (bridge && typeof bridge.database === 'function') {
+                settle(resolve, bridge);
+            }
+        };
+        const script = document.createElement('script');
+
+        script.src = '/api/plugins/baibaoku/v1/client.js';
+        script.async = true;
+        script.dataset.baiBaiToolkitBaibaokuClient = 'true';
+        script.addEventListener('load', () => {
+            const bridge = globalThis.BaiBaoKu;
+
+            if (bridge && typeof bridge.database === 'function') {
+                settle(resolve, bridge);
+            }
+        }, { once: true });
+        script.addEventListener('error', () => {
+            settle(reject, new Error('Failed to load BaiBaoKu frontend bridge.'));
+        }, { once: true });
+
+        window.addEventListener('baibaoku:ready', handleReady);
+        timeoutId = setTimeout(() => {
+            const bridge = globalThis.BaiBaoKu;
+
+            if (bridge && typeof bridge.database === 'function') {
+                settle(resolve, bridge);
+                return;
+            }
+
+            settle(reject, new Error('BaiBaoKu frontend bridge timed out.'));
+        }, 5000);
+
+        document.head.appendChild(script);
+    }).finally(() => {
+        manager.globalLibraryBridgePromise = null;
+    });
+
+    return manager.globalLibraryBridgePromise;
+}
+
+async function getPresetGlobalPromptLibraryDatabase() {
+    const bridge = await ensureBaiBaoKuBridge();
+
+    if (typeof bridge.isAvailable === 'function' && !await bridge.isAvailable()) {
+        throw new Error('BaiBaoKu backend is not available.');
+    }
+
+    const database = bridge.database(PRESET_GLOBAL_LIBRARY_DATABASE);
+
+    if (!database || typeof database.get !== 'function' || typeof database.set !== 'function') {
+        throw new Error('BaiBaoKu database API is not available.');
+    }
+
+    return database;
+}
+
+function setPresetGlobalPromptLibraryRuntimeState(library, { loaded = true, loading = false, error = null } = {}) {
+    const manager = getPresetVuePromptListManagerState();
+    const normalized = normalizePresetGlobalPromptLibrary(library);
+
+    manager.globalLibraryItems = normalized.items;
+    manager.globalLibraryLoaded = loaded;
+    manager.globalLibraryLoading = loading;
+    manager.globalLibraryError = error;
+
+    syncPresetVuePromptListManagerState();
+    return normalized;
+}
+
+async function loadPresetGlobalPromptLibrary({ force = false, showLoading = true } = {}) {
+    const manager = getPresetVuePromptListManagerState();
+
+    if (!force && manager.globalLibraryLoaded) {
+        return normalizePresetGlobalPromptLibrary({ items: manager.globalLibraryItems });
+    }
+
+    if (!force && manager.globalLibraryLoadPromise) {
+        return manager.globalLibraryLoadPromise;
+    }
+
+    manager.globalLibraryError = null;
+
+    if (showLoading) {
+        manager.globalLibraryLoading = true;
+        syncPresetVuePromptListManagerState();
+    }
+
+    manager.globalLibraryLoadPromise = (async () => {
+        try {
+            const database = await getPresetGlobalPromptLibraryDatabase();
+            const result = await database.get(PRESET_GLOBAL_LIBRARY_STORE, PRESET_GLOBAL_LIBRARY_KEY);
+            const library = normalizePresetGlobalPromptLibrary(result?.exists ? result.value : createEmptyPresetGlobalPromptLibrary());
+
+            setPresetGlobalPromptLibraryRuntimeState(library, { loaded: true, loading: false, error: null });
+            return library;
+        } catch (error) {
+            manager.globalLibraryLoading = false;
+            manager.globalLibraryLoaded = false;
+            manager.globalLibraryError = error?.message || String(error);
+            syncPresetVuePromptListManagerState();
+            throw error;
+        } finally {
+            manager.globalLibraryLoadPromise = null;
+        }
+    })();
+
+    return manager.globalLibraryLoadPromise;
+}
+
+async function updatePresetGlobalPromptLibrary(mutator) {
+    const manager = getPresetVuePromptListManagerState();
+    const previousSave = manager.globalLibrarySavePromise || Promise.resolve();
+    const run = async () => {
+        const currentLibrary = await loadPresetGlobalPromptLibrary({ force: true, showLoading: false });
+        const draft = normalizePresetGlobalPromptLibrary(currentLibrary);
+        const nextLibrary = normalizePresetGlobalPromptLibrary(await mutator(draft) || draft);
+        const database = await getPresetGlobalPromptLibraryDatabase();
+
+        await database.set(PRESET_GLOBAL_LIBRARY_STORE, PRESET_GLOBAL_LIBRARY_KEY, nextLibrary);
+        setPresetGlobalPromptLibraryRuntimeState(nextLibrary, { loaded: true, loading: false, error: null });
+        return nextLibrary;
+    };
+
+    const savePromise = previousSave.then(run, run);
+    const trackedPromise = savePromise.finally(() => {
+        if (manager.globalLibrarySavePromise === trackedPromise) {
+            manager.globalLibrarySavePromise = null;
+        }
+    });
+
+    manager.globalLibrarySavePromise = trackedPromise;
+    return manager.globalLibrarySavePromise;
+}
+
+async function getPresetGlobalPromptLibraryItem(itemId) {
+    if (!itemId) {
+        return null;
+    }
+
+    const library = await loadPresetGlobalPromptLibrary();
+    return library.items.find(item => item.id === itemId) ?? null;
+}
+
+function getPresetGlobalLibraryDialogHost() {
+    return document.querySelector('#completion_prompt_manager')
+        || document.querySelector(OPENAI_SETTINGS_SELECTOR)
+        || document.body;
+}
+
+function shouldAutoFocusPresetGlobalLibraryDialog() {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+        return true;
+    }
+
+    return !window.matchMedia('(pointer: coarse)').matches;
+}
+
+function isPresetGlobalLibraryDialogMobileLayout() {
+    return Boolean(
+        typeof window !== 'undefined'
+        && typeof window.matchMedia === 'function'
+        && window.matchMedia('(max-width: 600px)').matches
+    );
+}
+
+function clearPresetGlobalLibraryDialogLayerBounds(layer) {
+    if (!(layer instanceof HTMLElement)) {
+        return;
+    }
+
+    layer.style.removeProperty('--bai-bai-preset-global-library-dialog-top');
+    layer.style.removeProperty('--bai-bai-preset-global-library-dialog-left');
+    layer.style.removeProperty('--bai-bai-preset-global-library-dialog-width');
+    layer.style.removeProperty('--bai-bai-preset-global-library-dialog-height');
+}
+
+function updatePresetGlobalLibraryDialogLayerBounds(host, layer) {
+    if (!(host instanceof HTMLElement) || !(layer instanceof HTMLElement)) {
+        return;
+    }
+
+    if (isPresetGlobalLibraryDialogMobileLayout()) {
+        clearPresetGlobalLibraryDialogLayerBounds(layer);
+        return;
+    }
+
+    const viewportWidth = window.innerWidth || document.documentElement?.clientWidth || 0;
+    const viewportHeight = window.innerHeight || document.documentElement?.clientHeight || 0;
+
+    if (!viewportWidth || !viewportHeight) {
+        return;
+    }
+
+    const rect = host.getBoundingClientRect();
+    const visibleVertically = rect.bottom > 0 && rect.top < viewportHeight;
+    const visibleTop = visibleVertically ? Math.max(0, rect.top) : 0;
+    const visibleBottom = visibleVertically ? Math.min(viewportHeight, rect.bottom) : viewportHeight;
+    const width = Math.max(280, Math.min(rect.width || 420, viewportWidth));
+    const left = Math.min(Math.max(0, rect.left), Math.max(0, viewportWidth - width));
+    const availableHeight = Math.max(240, viewportHeight - visibleTop);
+    const height = Math.min(availableHeight, Math.max(320, visibleBottom - visibleTop));
+    const top = Math.min(visibleTop, Math.max(0, viewportHeight - height));
+
+    layer.style.setProperty('--bai-bai-preset-global-library-dialog-top', `${top}px`);
+    layer.style.setProperty('--bai-bai-preset-global-library-dialog-left', `${left}px`);
+    layer.style.setProperty('--bai-bai-preset-global-library-dialog-width', `${width}px`);
+    layer.style.setProperty('--bai-bai-preset-global-library-dialog-height', `${height}px`);
+}
+
+function showPresetGlobalLibraryDialog({
+    title,
+    message = '',
+    fields = [],
+    confirmText = t`确定`,
+    cancelText = t`取消`,
+    danger = false,
+} = {}) {
+    const host = getPresetGlobalLibraryDialogHost();
+
+    if (!(host instanceof HTMLElement)) {
+        return Promise.resolve(null);
+    }
+
+    return new Promise(resolve => {
+        const values = {};
+        const previousHostPosition = host.style.position;
+        const hadHostClass = host.classList.contains('bai-bai-preset-global-library-dialog-host');
+        const layer = document.createElement('div');
+        const dialog = document.createElement('div');
+        const head = document.createElement('div');
+        const titleElement = document.createElement('strong');
+        const closeButton = document.createElement('span');
+        const body = document.createElement('div');
+        const actions = document.createElement('div');
+        const cancelButton = document.createElement('span');
+        const confirmButton = document.createElement('span');
+        let updateDialogLayerBounds = null;
+
+        const cleanup = result => {
+            document.removeEventListener('keydown', handleKeydown, true);
+
+            if (updateDialogLayerBounds) {
+                window.removeEventListener('resize', updateDialogLayerBounds);
+                document.removeEventListener('scroll', updateDialogLayerBounds, true);
+            }
+
+            layer.remove();
+
+            if (!hadHostClass && !host.querySelector('.bai-bai-preset-global-library-dialog-layer')) {
+                host.classList.remove('bai-bai-preset-global-library-dialog-host');
+                host.style.position = previousHostPosition;
+            }
+
+            resolve(result);
+        };
+        const confirm = () => cleanup({ ...values });
+        const cancel = () => cleanup(null);
+        const handleKeydown = event => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                cancel();
+                return;
+            }
+
+            if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                event.preventDefault();
+                event.stopPropagation();
+                confirm();
+            }
+        };
+        const stopPropagation = event => event.stopPropagation();
+
+        host.classList.add('bai-bai-preset-global-library-dialog-host');
+        layer.className = 'bai-bai-preset-global-library-dialog-layer';
+        dialog.className = 'bai-bai-preset-global-library-dialog';
+        dialog.tabIndex = -1;
+        head.className = 'bai-bai-preset-global-library-dialog-head';
+        body.className = 'bai-bai-preset-global-library-dialog-body';
+        actions.className = 'bai-bai-preset-global-library-dialog-actions';
+        titleElement.textContent = title || '';
+        closeButton.className = 'menu_button fa-solid fa-xmark bai-bai-preset-global-library-dialog-button';
+        closeButton.title = t`取消`;
+        cancelButton.className = 'menu_button bai-bai-preset-global-library-dialog-button';
+        cancelButton.textContent = cancelText;
+        confirmButton.className = [
+            'menu_button',
+            'bai-bai-preset-global-library-dialog-button',
+            danger ? 'bai-bai-preset-global-library-dialog-danger' : '',
+        ].filter(Boolean).join(' ');
+        confirmButton.textContent = confirmText;
+
+        if (message) {
+            const messageElement = document.createElement('div');
+
+            messageElement.className = 'bai-bai-preset-global-library-dialog-message';
+            messageElement.textContent = message;
+            body.appendChild(messageElement);
+        }
+
+        for (const field of fields) {
+            if (!field?.id) {
+                continue;
+            }
+
+            const fieldWrapper = document.createElement('div');
+            const label = document.createElement('label');
+            let control = null;
+
+            fieldWrapper.className = 'bai-bai-preset-global-library-dialog-field';
+            label.textContent = field.label || field.id;
+            label.setAttribute('for', `bai_bai_preset_global_library_${field.id}`);
+            fieldWrapper.appendChild(label);
+
+            if (field.type === 'textarea') {
+                control = document.createElement('textarea');
+                control.rows = Number(field.rows) || 8;
+            } else if (field.type === 'select') {
+                control = document.createElement('select');
+
+                for (const option of field.options ?? []) {
+                    const optionElement = document.createElement('option');
+
+                    optionElement.value = String(option.value ?? '');
+                    optionElement.textContent = String(option.label ?? option.value ?? '');
+                    control.appendChild(optionElement);
+                }
+            } else {
+                control = document.createElement('input');
+                control.type = 'text';
+            }
+
+            control.id = `bai_bai_preset_global_library_${field.id}`;
+            control.classList.add('text_pole');
+            control.value = String(field.value ?? '');
+            values[field.id] = control.value;
+            control.addEventListener('input', () => {
+                values[field.id] = control.value;
+            });
+            control.addEventListener('change', () => {
+                values[field.id] = control.value;
+            });
+            fieldWrapper.appendChild(control);
+            body.appendChild(fieldWrapper);
+        }
+
+        closeButton.addEventListener('click', cancel);
+        cancelButton.addEventListener('click', cancel);
+        confirmButton.addEventListener('click', confirm);
+        layer.addEventListener('click', event => {
+            if (event.target === layer) {
+                cancel();
+            }
+        });
+        dialog.addEventListener('mousedown', stopPropagation);
+        dialog.addEventListener('pointerdown', stopPropagation);
+        dialog.addEventListener('click', stopPropagation);
+        document.addEventListener('keydown', handleKeydown, true);
+
+        head.append(titleElement, closeButton);
+        actions.append(cancelButton, confirmButton);
+        dialog.append(head, body, actions);
+        layer.appendChild(dialog);
+        host.appendChild(layer);
+        updateDialogLayerBounds = () => updatePresetGlobalLibraryDialogLayerBounds(host, layer);
+        updateDialogLayerBounds();
+        window.addEventListener('resize', updateDialogLayerBounds);
+        document.addEventListener('scroll', updateDialogLayerBounds, true);
+
+        if (shouldAutoFocusPresetGlobalLibraryDialog()) {
+            dialog.focus({ preventScroll: true });
+        }
+    });
+}
+
 function getCurrentPresetPromptFavorites(validPromptIds = getCurrentPresetPromptOrderIds()) {
     return getCurrentPresetPromptFavoritesState(validPromptIds).promptIds;
 }
@@ -6641,6 +7656,12 @@ function applyPresetPromptFavoritesToMemory(presetName, favoritesState) {
 }
 
 function readCurrentPresetExtensionField(path) {
+    const settingsValue = getObjectPath(oai_settings?.extensions, path);
+
+    if (settingsValue !== null && settingsValue !== undefined) {
+        return settingsValue;
+    }
+
     const presetName = oai_settings?.preset_settings_openai;
     const presetManager = getPresetManager('openai');
 
@@ -6651,12 +7672,6 @@ function readCurrentPresetExtensionField(path) {
         if (presetValue !== null && presetValue !== undefined) {
             return presetValue;
         }
-    }
-
-    const settingsValue = getObjectPath(oai_settings?.extensions, path);
-
-    if (settingsValue !== null && settingsValue !== undefined) {
-        return settingsValue;
     }
 
     return null;
@@ -6749,6 +7764,13 @@ function applyPresetPromptGroupExtensionPayloadToMemory(payload) {
             ? oai_settings.extensions
             : {};
         setObjectPath(oai_settings.extensions, PRESET_GROUP_EXTENSION_PATH, payload.groupState);
+
+        if (promptManager?.serviceSettings && typeof promptManager.serviceSettings === 'object') {
+            promptManager.serviceSettings.extensions = promptManager.serviceSettings.extensions && typeof promptManager.serviceSettings.extensions === 'object'
+                ? promptManager.serviceSettings.extensions
+                : {};
+            setObjectPath(promptManager.serviceSettings.extensions, PRESET_GROUP_EXTENSION_PATH, payload.groupState);
+        }
     }
 
     const preset = payload.presetManager?.getCompletionPresetByName?.(payload.presetName);
@@ -6975,6 +7997,10 @@ function getPresetVuePromptItemsFromModel(
             continue;
         }
 
+        if (item?.type === 'global-library') {
+            continue;
+        }
+
         if (item?.type === 'group') {
             promptItems.push(...(item.children ?? []).filter(child => child?.type === 'prompt'));
         }
@@ -7014,7 +8040,12 @@ function sanitizePresetVuePromptListModel(model) {
     };
 
     for (const item of model.items) {
-        if (item?.type === 'header' || item?.type === 'separator' || item?.type === 'favorites') {
+        if (
+            item?.type === 'header'
+            || item?.type === 'separator'
+            || item?.type === 'global-library'
+            || item?.type === 'favorites'
+        ) {
             if (seenStaticIds.has(item.type)) {
                 changed = true;
                 continue;
@@ -7141,6 +8172,30 @@ function togglePresetVuePromptFavoritesCollapsed() {
         promptIds: favoritesState.promptIds,
         collapsed: nextCollapsed,
     });
+}
+
+function togglePresetVuePromptGlobalLibraryCollapsed() {
+    const manager = getPresetVuePromptListManagerState();
+    const model = manager.state;
+    const nextCollapsed = !manager.globalLibraryCollapsed;
+    const mountId = PRESET_VUE_GLOBAL_LIBRARY_ENTRY_ID;
+
+    manager.globalLibraryCollapsed = nextCollapsed;
+
+    if (!nextCollapsed) {
+        clearPresetVuePromptGroupBodyUnmountTimer(manager, mountId);
+        setPresetVuePromptGroupBodyMounted(model, mountId, true);
+    }
+
+    const modelLibrary = model?.globalLibrary;
+
+    if (modelLibrary) {
+        modelLibrary.collapsed = nextCollapsed;
+    }
+
+    if (nextCollapsed) {
+        schedulePresetVuePromptGroupBodyUnmount(mountId);
+    }
 }
 
 function togglePresetVuePromptGroupCollapsed(groupId) {
@@ -7309,6 +8364,13 @@ function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false
         })
         : null;
 
+    const globalLibraryButton = renderPresetVuePromptActionButton(h, {
+        action: 'global-library',
+        icon: 'fa-database',
+        text: t`添加到全局库`,
+        onClick: event => handlePresetPromptActionButtonClick(event),
+    });
+
     if (favoriteMirror) {
         return [
             persistentFavoriteToggle,
@@ -7341,6 +8403,7 @@ function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false
         }),
         h('span', { class: 'bai-bai-preset-prompt-actions' }, [
             favoriteToggle,
+            globalLibraryButton,
             canDelete
                 ? renderPresetVuePromptActionButton(h, {
                     action: 'delete',
@@ -7416,6 +8479,11 @@ function renderPresetPromptControlsHtml({ canDelete, canEdit, canToggle, isEnabl
     return `
         <span title="${escapeHtml(t`更多操作`)}" class="menu_button bai-bai-preset-prompt-icon-button bai-bai-preset-prompt-actions-hint fa-solid fa-ellipsis"></span>
         <span class="bai-bai-preset-prompt-actions">
+            ${renderPresetPromptActionButtonHtml({
+                action: 'global-library',
+                icon: 'fa-database',
+                text: t`添加到全局库`,
+            })}
             ${deleteItemHtml}
             ${copyItemHtml}
             ${editItemHtml}
@@ -9381,6 +10449,42 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
         return;
     }
 
+    if (presetAction === 'global-library') {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        event.stopImmediatePropagation?.();
+        closePresetPromptActionMenus();
+        void addPresetPromptToGlobalLibrary(promptId);
+        return;
+    }
+
+    if (presetAction === 'global-library-insert') {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        event.stopImmediatePropagation?.();
+        closePresetPromptActionMenus();
+        void insertPresetGlobalPromptLibraryItemToCurrentPreset(getPresetGlobalLibraryItemIdFromAction(action));
+        return;
+    }
+
+    if (presetAction === 'global-library-edit') {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        event.stopImmediatePropagation?.();
+        closePresetPromptActionMenus();
+        void editPresetGlobalPromptLibraryItem(getPresetGlobalLibraryItemIdFromAction(action));
+        return;
+    }
+
+    if (presetAction === 'global-library-delete') {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        event.stopImmediatePropagation?.();
+        closePresetPromptActionMenus();
+        void deletePresetGlobalPromptLibraryItem(getPresetGlobalLibraryItemIdFromAction(action));
+        return;
+    }
+
     if (presetAction === 'copy') {
         event.preventDefault?.();
         event.stopPropagation?.();
@@ -9441,6 +10545,306 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
             promptManager.saveServiceSettings = originalSaveServiceSettings;
         }
     }
+}
+
+async function addPresetPromptToGlobalLibrary(promptId) {
+    if (!promptId) {
+        toastr.warning(t`没有找到要添加到全局库的条目。`);
+        return false;
+    }
+
+    const sourcePrompt = promptManager?.getPromptById?.(promptId);
+
+    if (!sourcePrompt) {
+        toastr.warning(t`没有找到要添加到全局库的条目。`);
+        return false;
+    }
+
+    const item = {
+        id: uuidv4(),
+        name: normalizePresetGlobalPromptLibraryName(sourcePrompt.name),
+        content: typeof sourcePrompt.content === 'string' ? sourcePrompt.content : String(sourcePrompt.content ?? ''),
+    };
+
+    try {
+        await updatePresetGlobalPromptLibrary(library => {
+            library.items.push(item);
+            return library;
+        });
+        toastr.success(t`已添加到全局库。`);
+        return true;
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} Failed to add preset prompt to global library`, error);
+        toastr.error(t`添加到全局库失败。`);
+        return false;
+    }
+}
+
+async function insertPresetGlobalPromptLibraryItemToCurrentPreset(itemId) {
+    if (
+        !promptManager?.activeCharacter
+        || !Array.isArray(promptManager.serviceSettings?.prompts)
+        || typeof promptManager.addPrompt !== 'function'
+    ) {
+        toastr.warning(t`当前无法添加全局库条目。`);
+        return false;
+    }
+
+    const item = await getPresetGlobalPromptLibraryItem(itemId);
+
+    if (!item) {
+        toastr.warning(t`没有找到这个全局库条目。`);
+        return false;
+    }
+
+    const promptOrder = promptManager.getPromptOrderForCharacter?.(promptManager.activeCharacter);
+
+    if (!Array.isArray(promptOrder)) {
+        toastr.warning(t`当前预设列表不可用。`);
+        return false;
+    }
+
+    const promptId = createUniquePresetPromptIdentifier();
+    const promptName = createPresetGlobalPromptInsertName(item.name);
+    const target = await choosePresetGlobalPromptInsertTarget();
+
+    if (!target) {
+        return false;
+    }
+
+    promptManager.addPrompt({
+        name: promptName,
+        role: 'system',
+        content: item.content,
+    }, promptId);
+
+    const orderEntry = {
+        identifier: promptId,
+        enabled: true,
+    };
+
+    insertPresetGlobalPromptOrderEntry(promptOrder, orderEntry, target);
+
+    const counts = promptManager.tokenHandler?.getCounts?.();
+
+    if (counts) {
+        counts[promptId] = null;
+    }
+
+    promptManager.log?.(`Added global library prompt: ${itemId} -> ${promptId}.`);
+    refreshPresetPromptListAfterCopy();
+
+    try {
+        markPresetPromptServiceSettingsSavePending();
+        await flushPendingPresetPromptChanges({ includeOpenAiPresetSaves: false });
+        toastr.success(t`已添加到当前预设。`);
+        refreshPromptManagerTokensDebounced();
+        return true;
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} Failed to save global library prompt insert`, error);
+        toastr.error(t`添加到当前预设后保存失败。`);
+        return false;
+    }
+}
+
+async function choosePresetGlobalPromptInsertTarget() {
+    const groupState = getPresetPromptGroupState();
+    const groups = Array.isArray(groupState?.groups)
+        ? groupState.groups.filter(group => group?.id && String(group.name || '').trim())
+        : [];
+
+    if (!groups.length) {
+        return { type: 'top' };
+    }
+
+    const result = await showPresetGlobalLibraryDialog({
+        title: t`添加到当前预设`,
+        fields: [{
+            id: 'target',
+            type: 'select',
+            label: t`添加位置`,
+            value: 'top',
+            options: [
+                { value: 'top', label: t`独立在预设最上方` },
+                ...groups.map(group => ({
+                    value: group.id,
+                    label: group.name,
+                })),
+            ],
+        }],
+        confirmText: t`添加`,
+        cancelText: t`取消`,
+    });
+
+    if (!result) {
+        return null;
+    }
+
+    return result.target === 'top'
+        ? { type: 'top' }
+        : { type: 'group', groupId: result.target };
+}
+
+function insertPresetGlobalPromptOrderEntry(promptOrder, orderEntry, target) {
+    if (!Array.isArray(promptOrder) || !orderEntry?.identifier) {
+        return;
+    }
+
+    if (target?.type !== 'group' || !target.groupId) {
+        promptOrder.unshift(orderEntry);
+        return;
+    }
+
+    const groupState = getPresetPromptGroupState();
+    const groupExists = Array.isArray(groupState.groups)
+        && groupState.groups.some(group => group?.id === target.groupId);
+
+    if (!groupExists) {
+        promptOrder.unshift(orderEntry);
+        return;
+    }
+
+    if (!groupState.prompts || typeof groupState.prompts !== 'object') {
+        groupState.prompts = {};
+    }
+
+    const groupPromptIds = new Set(
+        Object.entries(groupState.prompts ?? {})
+            .filter(([, meta]) => meta?.groupId === target.groupId)
+            .map(([promptId]) => promptId),
+    );
+    let insertIndex = 0;
+
+    for (let index = 0; index < promptOrder.length; index += 1) {
+        if (groupPromptIds.has(promptOrder[index]?.identifier)) {
+            insertIndex = index + 1;
+        }
+    }
+
+    promptOrder.splice(insertIndex, 0, orderEntry);
+    groupState.prompts[orderEntry.identifier] = { groupId: target.groupId };
+    savePresetPromptGroupSettings({ force: true });
+}
+
+function createPresetGlobalPromptInsertName(name) {
+    const baseName = normalizePresetGlobalPromptLibraryName(name);
+    const existingNames = new Set(
+        (promptManager?.serviceSettings?.prompts ?? [])
+            .map(prompt => prompt?.name)
+            .filter(name => typeof name === 'string'),
+    );
+
+    if (!existingNames.has(baseName)) {
+        return baseName;
+    }
+
+    for (let index = 2; index < 1000; index++) {
+        const candidate = `${baseName} ${index}`;
+
+        if (!existingNames.has(candidate)) {
+            return candidate;
+        }
+    }
+
+    return `${baseName} ${Date.now()}`;
+}
+
+async function editPresetGlobalPromptLibraryItem(itemId) {
+    const item = await getPresetGlobalPromptLibraryItem(itemId);
+
+    if (!item) {
+        toastr.warning(t`没有找到这个全局库条目。`);
+        return false;
+    }
+
+    const result = await showPresetGlobalLibraryDialog({
+        title: t`编辑全局库条目`,
+        fields: [
+            {
+                id: 'name',
+                type: 'text',
+                label: t`名称`,
+                value: item.name,
+            },
+            {
+                id: 'content',
+                type: 'textarea',
+                label: t`内容`,
+                value: item.content,
+                rows: 16,
+            },
+        ],
+        confirmText: t`保存`,
+        cancelText: t`取消`,
+    });
+
+    if (!result) {
+        return false;
+    }
+
+    const normalizedName = normalizePresetGlobalPromptLibraryName(result.name);
+    const nextContent = typeof result.content === 'string' ? result.content : String(result.content ?? '');
+
+    try {
+        await updatePresetGlobalPromptLibrary(library => {
+            library.items = library.items.map(entry => entry.id === itemId
+                ? {
+                    id: entry.id,
+                    name: normalizedName,
+                    content: nextContent,
+                }
+                : entry);
+            return library;
+        });
+        toastr.success(t`已更新全局库条目。`);
+        return true;
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} Failed to edit preset global library item`, error);
+        toastr.error(t`更新全局库条目失败。`);
+        return false;
+    }
+}
+
+async function deletePresetGlobalPromptLibraryItem(itemId) {
+    const item = await getPresetGlobalPromptLibraryItem(itemId);
+
+    if (!item) {
+        toastr.warning(t`没有找到这个全局库条目。`);
+        return false;
+    }
+
+    const confirmed = await showPresetGlobalLibraryDialog({
+        title: t`删除全局库条目`,
+        message: t`要删除这个全局库条目吗？`,
+        confirmText: t`删除`,
+        cancelText: t`取消`,
+        danger: true,
+    });
+
+    if (!confirmed) {
+        return false;
+    }
+
+    try {
+        await updatePresetGlobalPromptLibrary(library => {
+            library.items = library.items.filter(entry => entry.id !== itemId);
+            return library;
+        });
+        toastr.success(t`已删除全局库条目。`);
+        return true;
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} Failed to delete preset global library item`, error);
+        toastr.error(t`删除全局库条目失败。`);
+        return false;
+    }
+}
+
+function getPresetGlobalLibraryItemIdFromAction(action) {
+    const row = action instanceof Element
+        ? action.closest('.bai-bai-preset-global-library-prompt[data-preset-global-library-id]')
+        : null;
+
+    return row?.dataset?.presetGlobalLibraryId || null;
 }
 
 function getPresetPromptIdFromAction(action) {
