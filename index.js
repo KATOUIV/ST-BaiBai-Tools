@@ -27,6 +27,7 @@ const LOCAL_ASSET_VERSION = getLocalAssetVersion(CURRENT_VERSION);
 const { SaveGenerateDisplay } = await importVersionedLocalModule('./saveGenerateDisplay.js');
 const chatOptimizations = await importVersionedLocalModule('./chatOptimizations.js');
 const presetOptimizations = await importVersionedLocalModule('./presetOptimizations.js');
+const worldInfoPageOptimization = await importVersionedLocalModule('./worldInfoPageOptimization.js');
 
 const LOG_PREFIX = '[柏宝箱]';
 const MODULE_NAME = getModuleName();
@@ -338,6 +339,7 @@ const defaultSettings = {
     customCssInputOptimizationEnabled: true,
     customCssShadowPropertyEnabled: true,
     worldInfoDrawerOptimizationEnabled: true,
+    worldInfoPageOptimizationEnabled: false,
     characterSearchInputOptimizationEnabled: true,
     baibaokuSettingsAccelerationEnabled: true,
     fastCharacterListEnabled: true,
@@ -402,6 +404,12 @@ presetOptimizations.configurePresetOptimizations({
     logPrefix: LOG_PREFIX,
     loadCodeMirrorModules: loadDescriptionCodeMirrorModules,
     codeMirrorHistoryMaxLength: DESCRIPTION_CODEMIRROR_HISTORY_MAX_LENGTH,
+    saveSettings: saveExtensionSettings,
+});
+worldInfoPageOptimization.configureWorldInfoPageOptimization({
+    settings,
+    extensionState,
+    logPrefix: LOG_PREFIX,
     saveSettings: saveExtensionSettings,
 });
 presetOptimizations.installOpenAITokenizerBulkBridge();
@@ -2729,6 +2737,8 @@ async function renderSettingsPanel() {
             applyWorldInfoCharacterFilterOptionsOptimization();
         });
 
+    worldInfoPageOptimization.bindWorldInfoPageOptimizationSettings({ saveSettings: saveExtensionSettings });
+
     $('#bai_bai_toolkit_character_search_input_optimization_enabled')
         .prop('checked', settings.characterSearchInputOptimizationEnabled)
         .on('input', function () {
@@ -3370,6 +3380,7 @@ function applyFeatureSettings() {
     applyWorldInfoDrawerOptimization();
     applyWorldInfoLazySelect2Optimization();
     applyWorldInfoCharacterFilterOptionsOptimization();
+    worldInfoPageOptimization.applyWorldInfoPageOptimization();
     applyCharacterSearchInputOptimization();
     applyCharacterListAvatarLazyLoadOptimization();
     applyFastChatGetOptimization();
