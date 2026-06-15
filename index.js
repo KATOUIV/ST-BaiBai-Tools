@@ -42,6 +42,7 @@ const BAIBAOKU_FAST_CONFIG_URL = '/api/plugins/baibaoku/v1/fast-config';
 const BAIBAOKU_FAST_CHAT_GET_URL = '/api/plugins/baibaoku/v1/chats/fast-get';
 const BAIBAOKU_THEME_GET_URL = '/api/plugins/baibaoku/v1/themes/get';
 const BAIBAOKU_REQUIRED_BACKEND_VERSION = '0.4.3';
+const BAIBAOKU_PRESET_AUTO_BACKUP_MIN_VERSION = '0.4.4';
 const BAIBAOKU_THEME_LOADING_STYLE_ID = 'bai_bai_toolkit_theme_loading_style';
 const BAIBAOKU_THEME_LOADING_HOST_CLASS = 'bai-bai-toolkit-theme-loading-host';
 const BAIBAOKU_THEME_LOADING_OVERLAY_CLASS = 'bai-bai-toolkit-theme-loading-overlay';
@@ -345,6 +346,7 @@ const defaultSettings = {
     saveGenerateEnabled: true,
     tokenizerBulkCountEnabled: true,
     extensionManifestBundleEnabled: true,
+    presetAutoBackupEnabled: true,
     characterListAvatarLazyLoadEnabled: true,
     fastChatListEnabled: true,
     welcomeRecentChatDirectOpenEnabled: true,
@@ -2824,6 +2826,15 @@ async function renderSettingsPanel() {
             applyBaibaokuPanelLocalState(container);
         });
 
+    $('#bai_bai_toolkit_preset_auto_backup_enabled')
+        .prop('checked', settings.presetAutoBackupEnabled !== false)
+        .on('input', function () {
+            settings.presetAutoBackupEnabled = Boolean($(this).prop('checked'));
+            saveExtensionSettings();
+            presetOptimizations.applyPresetAutoBackup();
+            applyBaibaokuPanelLocalState(container);
+        });
+
     $('#bai_bai_toolkit_tokenizer_bulk_count_enabled')
         .prop('checked', settings.tokenizerBulkCountEnabled)
         .on('input', async function () {
@@ -2920,6 +2931,7 @@ function getBaibaokuPanelState() {
 function applyBaibaokuPanelLocalState(container) {
     const bridge = getBaibaokuEarlyBridge();
     const bridgeStatus = container.find('#bai_bai_toolkit_baibaoku_bridge_status');
+    const presetAutoBackupToggle = container.find('#bai_bai_toolkit_preset_auto_backup_enabled');
 
     const bridgeLabel = bridge?.installed
         ? `已注入${bridge.version ? ` v${bridge.version}` : ''}`
@@ -2939,10 +2951,13 @@ function applyBaibaokuPanelLocalState(container) {
         .prop('disabled', true);
     container.find('#bai_bai_toolkit_save_generate_enabled')
         .prop('checked', settings.saveGenerateEnabled === true);
+    presetAutoBackupToggle
+        .prop('checked', settings.presetAutoBackupEnabled !== false);
     container.find('#bai_bai_toolkit_tokenizer_bulk_count_enabled')
         .prop('checked', settings.tokenizerBulkCountEnabled !== false);
 
     applyCachedBaibaokuPanelStatus(container, getBaibaokuPanelState().cache);
+    applyPresetAutoBackupToggleAvailability(container, getBaibaokuPanelState().cache?.status);
 }
 
 function applyCachedBaibaokuPanelStatus(container, cache) {
@@ -2970,6 +2985,37 @@ function applyCachedBaibaokuPanelStatus(container, cache) {
     }
 
     return false;
+}
+
+function applyPresetAutoBackupToggleAvailability(container, status) {
+    const toggle = container.find('#bai_bai_toolkit_preset_auto_backup_enabled');
+    const label = toggle.closest('label');
+    const supported = isBaibaokuVersionAtLeast(status?.version, BAIBAOKU_PRESET_AUTO_BACKUP_MIN_VERSION);
+
+    presetOptimizations.setPresetAutoBackupBackendAvailable(supported);
+
+    if (!label.data('presetAutoBackupDefaultTitle')) {
+        label.data('presetAutoBackupDefaultTitle', label.attr('title') || '');
+    }
+
+    toggle.prop('disabled', !supported);
+    label
+        .toggleClass('disabled', !supported)
+        .css('opacity', supported ? '' : '0.55')
+        .attr('title', supported
+            ? label.data('presetAutoBackupDefaultTitle')
+            : `\u9884\u8bbe\u81ea\u52a8\u5907\u4efd\u9700\u8981\u67cf\u5b9d\u5e93 v${BAIBAOKU_PRESET_AUTO_BACKUP_MIN_VERSION} \u6216\u66f4\u9ad8\u7248\u672c`);
+}
+
+function isBaibaokuVersionAtLeast(version, minimumVersion) {
+    version = String(version || '').trim();
+    minimumVersion = String(minimumVersion || '').trim();
+
+    if (!version || !minimumVersion) {
+        return false;
+    }
+
+    return !isVersionGreater(minimumVersion, version);
 }
 
 async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
@@ -3061,6 +3107,7 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
         updateBaibaokuStatusText(driverStatus, driver?.available
             ? `可用${driver.package ? ` (${driver.package})` : ''}`
             : '不可用', Boolean(driver?.available));
+        applyPresetAutoBackupToggleAvailability(container, status);
         void maybeShowBaibaokuBackendUpdatePrompt(status);
 
         try {
@@ -3122,6 +3169,7 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
         markSaveGenerateBackendAvailable(globalThis[SAVE_GENERATE_FETCH_KEY], false);
         updateBaibaokuStatusText(serverStatus, '未连接', false);
         updateBaibaokuStatusText(driverStatus, '未知', false);
+        applyPresetAutoBackupToggleAvailability(container, null);
     }
     if (!refreshed) {
         panelState.cache = {
@@ -3307,6 +3355,7 @@ function applyFeatureSettings() {
     presetOptimizations.applyPresetDragOptimization();
     presetOptimizations.applyPresetGrouping();
     presetOptimizations.applyPresetBackupPreviewUi();
+    presetOptimizations.applyPresetAutoBackup();
     presetOptimizations.applyPresetSwitchOptimization();
     presetOptimizations.applyPresetToggleOptimization();
     presetOptimizations.applyPresetPromptCodeMirrorEditorOptimization();

@@ -14,9 +14,11 @@ const PRESET_PROMPT_CODEMIRROR_EDITOR_STYLE_ID = 'bai_bai_toolkit_preset_prompt_
 const PRESET_BACKUP_PREVIEW_UI_STYLE_ID = 'bai_bai_toolkit_preset_backup_preview_ui_style';
 const PRESET_SCROLL_STYLE_ID = 'bai_bai_toolkit_preset_scroll_style';
 const PRESET_DRAG_STYLE_ID = 'bai_bai_toolkit_preset_drag_style';
+const PRESET_BACKUP_PREVIEW_APP_KEY = '__baiBaiToolkitPresetBackupPreviewApp';
 const PRESET_BACKUP_PREVIEW_UI_KEY = '__baiBaiToolkitPresetBackupPreviewUi';
 const PRESET_DRAG_HANDLER_KEY = '__baiBaiToolkitPresetDragHandler';
 const PRESET_DRAG_PATCH_KEY = '__baiBaiToolkitPresetDragPatch';
+const PRESET_AUTO_BACKUP_FETCH_KEY = '__baiBaiToolkitPresetAutoBackupFetch';
 const PRESET_SWITCH_BEFORE_HANDLER_KEY = '__baiBaiToolkitPresetSwitchBeforeHandler';
 const PRESET_SWITCH_HANDLER_KEY = '__baiBaiToolkitPresetSwitchHandler';
 const PRESET_MODEL_CHANGE_HANDLER_KEY = '__baiBaiToolkitPresetModelChangeHandler';
@@ -92,7 +94,12 @@ const PRESET_DRAG_INTERACTIVE_SELECTOR = '.prompt_manager_prompt_controls, .bai-
 const BAIBAOKU_TOKENIZER_BULK_COUNT_URL = '/api/plugins/baibaoku/v1/tokenizers/bulk-count';
 const OPENAI_TOKENIZER_BULK_BRIDGE_KEY = '__baibaokuTokenizerBulkBridge';
 const OPENAI_TOKENIZER_BULK_CACHE_LIMIT = 5000;
+const PRESET_SAVE_URL = '/api/presets/save';
+const PRESET_BACKUP_SAVE_URL = '/api/plugins/baibaoku/v1/preset-backups/save';
 const PRESET_BACKUP_PREVIEW_LIST_URL = '/api/plugins/baibaoku/v1/preset-backups/save/list';
+const PRESET_BACKUP_PREVIEW_RENAME_URL = '/api/plugins/baibaoku/v1/preset-backups/save/rename';
+const PRESET_BACKUP_PREVIEW_DELETE_URL = '/api/plugins/baibaoku/v1/preset-backups/save/delete';
+const PRESET_BACKUP_PREVIEW_DOWNLOAD_URL = '/api/plugins/baibaoku/v1/preset-backups/download';
 const PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS = 2000;
 const PRESET_DRAG_READY_CLASS = 'bai-bai-toolkit-preset-drag-ready';
 const PRESET_DRAG_ACTIVE_CLASS = 'bai-bai-toolkit-preset-drag-active';
@@ -121,6 +128,7 @@ const FORCE_TOGGLE_PROMPTS = new Set([
 
 const PRESET_BACKUP_PREVIEW_PAGE_SIZE = 5;
 const PRESET_BACKUP_PREVIEW_EXPAND_ANIMATION_MS = 180;
+let presetAutoBackupBackendAvailable = true;
 
 let settings = {};
 let extensionState = {};
@@ -265,6 +273,173 @@ function dispatchDescriptionEditorSourceInput(source) {
     source.dispatchEvent(event);
 }
 
+function applyPresetAutoBackup() {
+    installPresetAutoBackupFetchHook();
+}
+
+function setPresetAutoBackupBackendAvailable(available) {
+    presetAutoBackupBackendAvailable = available !== false;
+    installPresetAutoBackupFetchHook();
+}
+
+function installPresetAutoBackupFetchHook() {
+    const existing = globalThis[PRESET_AUTO_BACKUP_FETCH_KEY];
+
+    if (existing?.wrappedFetch) {
+        existing.isEnabled = () => settings.presetAutoBackupEnabled !== false && presetAutoBackupBackendAvailable;
+        existing.skipCount = Number(existing.skipCount) || 0;
+        return existing;
+    }
+
+    const originalFetch = globalThis.fetch;
+
+    if (typeof originalFetch !== 'function') {
+        return null;
+    }
+
+    const state = {
+        originalFetch: originalFetch.bind(globalThis),
+        wrappedFetch: null,
+        skipCount: 0,
+        isEnabled: () => settings.presetAutoBackupEnabled !== false && presetAutoBackupBackendAvailable,
+    };
+
+    state.wrappedFetch = function baiBaiToolkitPresetAutoBackupFetch(input, init) {
+        if (state.isEnabled() && isPresetAutoBackupSourceRequest(input, init)) {
+            if (state.skipCount > 0) {
+                state.skipCount -= 1;
+            } else {
+                void schedulePresetAutoBackupFromRequest(state, input, init);
+            }
+        }
+
+        return state.originalFetch(input, init);
+    };
+
+    state.wrappedFetch[PRESET_AUTO_BACKUP_FETCH_KEY] = true;
+    globalThis[PRESET_AUTO_BACKUP_FETCH_KEY] = state;
+    globalThis.fetch = state.wrappedFetch;
+    return state;
+}
+
+function skipNextPresetAutoBackup() {
+    const state = installPresetAutoBackupFetchHook();
+
+    if (state) {
+        state.skipCount += 1;
+    }
+
+    return state;
+}
+
+function isPresetAutoBackupSourceRequest(input, init) {
+    if (getPresetAutoBackupFetchMethod(input, init) !== 'POST') {
+        return false;
+    }
+
+    const url = getPresetAutoBackupFetchUrl(input);
+
+    if (!url) {
+        return false;
+    }
+
+    try {
+        return new URL(url, location.href).pathname === PRESET_SAVE_URL;
+    } catch {
+        return false;
+    }
+}
+
+async function schedulePresetAutoBackupFromRequest(state, input, init) {
+    const body = await readPresetAutoBackupJsonBody(input, init);
+
+    if (!isPresetAutoBackupBody(body)) {
+        return;
+    }
+
+    try {
+        await state.originalFetch(PRESET_BACKUP_SAVE_URL, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+        });
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} Failed to create preset auto backup`, error);
+    }
+}
+
+function isPresetAutoBackupBody(body) {
+    return Boolean(
+        body
+        && typeof body === 'object'
+        && !Array.isArray(body)
+        && typeof body.name === 'string'
+        && body.name.trim()
+        && body.preset
+        && typeof body.preset === 'object',
+    );
+}
+
+async function readPresetAutoBackupJsonBody(input, init) {
+    if (Object.prototype.hasOwnProperty.call(init || {}, 'body')) {
+        return readPresetAutoBackupJsonValue(init.body);
+    }
+
+    if (!isPresetAutoBackupRequest(input) || input.bodyUsed || !input.body) {
+        return null;
+    }
+
+    try {
+        return await input.clone().json().catch(() => null);
+    } catch {
+        return null;
+    }
+}
+
+async function readPresetAutoBackupJsonValue(value) {
+    if (typeof value === 'string') {
+        return parsePresetAutoBackupJson(value);
+    }
+
+    if (typeof Blob === 'function' && value instanceof Blob) {
+        return parsePresetAutoBackupJson(await value.text());
+    }
+
+    return null;
+}
+
+function parsePresetAutoBackupJson(text) {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return null;
+    }
+}
+
+function getPresetAutoBackupFetchUrl(input) {
+    if (typeof input === 'string') {
+        return input;
+    }
+
+    if (input instanceof URL) {
+        return input.href;
+    }
+
+    if (isPresetAutoBackupRequest(input)) {
+        return input.url;
+    }
+
+    return '';
+}
+
+function getPresetAutoBackupFetchMethod(input, init) {
+    return String(init?.method || (isPresetAutoBackupRequest(input) ? input.method : '') || 'GET').toUpperCase();
+}
+
+function isPresetAutoBackupRequest(value) {
+    return typeof Request === 'function' && value instanceof Request;
+}
+
 function applyPresetBackupPreviewUi() {
     applyPresetBackupPreviewUiStyle();
     insertPresetBackupPreviewUi();
@@ -284,11 +459,9 @@ function insertPresetBackupPreviewUi() {
         host = document.createElement('div');
         host.id = PRESET_BACKUP_PREVIEW_UI_ID;
         host.className = 'bai-bai-preset-backup-preview';
-        host.innerHTML = renderPresetBackupPreviewUiHtml();
-        bindPresetBackupPreviewUi(host);
-        host.dataset.presetBackupPage = '1';
-        filterPresetBackupPreviewItems(host);
     }
+
+    void mountPresetBackupPreviewVueApp(host);
 
     if (host.nextElementSibling !== target || host.parentElement !== target.parentElement) {
         target.parentElement.insertBefore(host, target);
@@ -328,198 +501,584 @@ function installPresetBackupPreviewUiObserver() {
     extensionState[PRESET_BACKUP_PREVIEW_UI_KEY] = state;
 }
 
-function bindPresetBackupPreviewUi(host) {
-    host.addEventListener('input', event => {
-        const target = getPresetBackupPreviewSearchInputFromEvent(event);
-
-        if (!target) {
-            return;
-        }
-
-        if (event.isComposing || target.dataset.presetBackupComposing === 'true') {
-            return;
-        }
-
-        applyPresetBackupPreviewSearchFilter(host);
-    });
-
-    host.addEventListener('compositionstart', event => {
-        const target = getPresetBackupPreviewSearchInputFromEvent(event);
-
-        if (target) {
-            target.dataset.presetBackupComposing = 'true';
-        }
-    });
-
-    host.addEventListener('compositionend', event => {
-        const target = getPresetBackupPreviewSearchInputFromEvent(event);
-
-        if (!target) {
-            return;
-        }
-
-        delete target.dataset.presetBackupComposing;
-
-        if (typeof requestAnimationFrame === 'function') {
-            requestAnimationFrame(() => applyPresetBackupPreviewSearchFilter(host));
-        } else {
-            setTimeout(() => applyPresetBackupPreviewSearchFilter(host), 0);
-        }
-    });
-
-    host.addEventListener('click', event => {
-        const actionTarget = event.target instanceof Element
-            ? event.target.closest('[data-preset-backup-action]')
-            : null;
-
-        if (actionTarget instanceof HTMLButtonElement) {
-            event.preventDefault();
-            event.stopPropagation();
-
-            handlePresetBackupPreviewAction(host, actionTarget);
-            return;
-        }
-
-        const summary = event.target instanceof Element
-            ? event.target.closest('.bai-bai-preset-backup-summary')
-            : null;
-
-        if (!(summary instanceof HTMLElement)) {
-            return;
-        }
-
-        const details = summary.closest('.bai-bai-preset-backup-details');
-
-        if (!(details instanceof HTMLDetailsElement)) {
-            return;
-        }
-
-        event.preventDefault();
-        togglePresetBackupPreviewDetails(details);
-    });
-}
-
-function getPresetBackupPreviewSearchInputFromEvent(event) {
-    const target = event.target instanceof Element
-        ? event.target.closest('[data-preset-backup-search]')
-        : null;
-
-    return target instanceof HTMLInputElement ? target : null;
-}
-
-function applyPresetBackupPreviewSearchFilter(host) {
-    setPresetBackupPreviewPage(host, 1);
-    filterPresetBackupPreviewItems(host);
-}
-
-function togglePresetBackupPreviewDetails(details) {
-    const summary = details.querySelector('.bai-bai-preset-backup-summary');
-
-    if (!(summary instanceof HTMLElement)) {
-        details.open = !details.open;
+async function mountPresetBackupPreviewVueApp(host) {
+    if (!(host instanceof HTMLElement) || extensionState[PRESET_BACKUP_PREVIEW_APP_KEY]?.host === host) {
         return;
     }
 
-    const shouldReduceMotion = typeof matchMedia === 'function'
-        && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const existing = extensionState[PRESET_BACKUP_PREVIEW_APP_KEY];
 
-    if (shouldReduceMotion || typeof details.animate !== 'function') {
-        details.open = !details.open;
-        return;
-    }
-
-    if (details.dataset.presetBackupAnimating === 'true') {
-        return;
-    }
-
-    const isClosing = details.open;
-
-    details.dataset.presetBackupAnimating = 'true';
-    details.style.overflow = 'hidden';
-    details.classList.toggle(PRESET_BACKUP_PREVIEW_CLOSING_CLASS, isClosing);
-
-    const startHeight = details.offsetHeight;
-    const endHeight = isClosing ? summary.offsetHeight : (() => {
-        details.style.height = `${startHeight}px`;
-        details.open = true;
-        return details.scrollHeight;
-    })();
-
-    details.style.height = `${startHeight}px`;
-
-    const animation = details.animate(
-        { height: [`${startHeight}px`, `${endHeight}px`] },
-        {
-            duration: PRESET_BACKUP_PREVIEW_EXPAND_ANIMATION_MS,
-            easing: 'ease',
-        },
-    );
-
-    animation.onfinish = () => {
-        if (startHeight > endHeight) {
-            details.open = false;
-        }
-
-        details.style.height = '';
-        details.style.overflow = '';
-        details.classList.remove(PRESET_BACKUP_PREVIEW_CLOSING_CLASS);
-        delete details.dataset.presetBackupAnimating;
-    };
-
-    animation.oncancel = () => {
-        details.style.height = '';
-        details.style.overflow = '';
-        details.classList.remove(PRESET_BACKUP_PREVIEW_CLOSING_CLASS);
-        delete details.dataset.presetBackupAnimating;
-    };
-}
-
-async function handlePresetBackupPreviewAction(host, button) {
-    const action = button.dataset.presetBackupAction;
-    const row = button.closest('[data-preset-backup-name]');
-    const name = row instanceof HTMLElement ? row.dataset.presetBackupName || '\u8fd9\u4e2a\u5907\u4efd' : '\u8fd9\u4e2a\u5907\u4efd';
-
-    if (action === 'prev-page' || action === 'next-page') {
-        const currentPage = getPresetBackupPreviewPage(host);
-        const nextPage = action === 'prev-page' ? currentPage - 1 : currentPage + 1;
-        setPresetBackupPreviewPage(host, nextPage);
-        filterPresetBackupPreviewItems(host);
-        return;
-    }
-
-    if (action === 'refresh') {
-        button.disabled = true;
-        button.classList.add('bai-bai-preset-backup-refreshing');
-        setPresetBackupPreviewStatus(host, '\u6b63\u5728\u5237\u65b0\u5907\u4efd\u5217\u8868...');
-
+    if (existing?.app) {
         try {
-            const items = await fetchPresetBackupPreviewItems();
-            renderPresetBackupPreviewList(host, items);
-            setPresetBackupPreviewPage(host, 1);
-            filterPresetBackupPreviewItems(host);
+            existing.app.unmount();
         } catch (error) {
-            console.warn(`${LOG_PREFIX} Failed to refresh preset backups`, error);
-            setPresetBackupPreviewStatus(host, `\u5237\u65b0\u5931\u8d25\uff1a${error?.message || '\u672a\u77e5\u9519\u8bef'}`);
-        } finally {
-            button.disabled = false;
-            button.classList.remove('bai-bai-preset-backup-refreshing');
+            console.debug(`${LOG_PREFIX} Failed to unmount preset backup preview app`, error);
         }
-        return;
     }
 
-    if (action === 'download') {
-        setPresetBackupPreviewStatus(host, `\u4e0b\u8f7d\u63a5\u53e3\u5f85\u63a5\u5165\uff1a${name}`);
-        return;
-    }
+    try {
+        const vue = await loadPresetVueModule();
 
-    if (action === 'rename') {
-        setPresetBackupPreviewStatus(host, `\u91cd\u547d\u540d\u63a5\u53e3\u5f85\u63a5\u5165\uff1a${name}`);
-        return;
-    }
+        if (!document.documentElement.contains(host)) {
+            return;
+        }
 
-    if (action === 'delete') {
-        setPresetBackupPreviewStatus(host, `\u5220\u9664\u63a5\u53e3\u5f85\u63a5\u5165\uff1a${name}`);
+        const state = createPresetBackupPreviewModel();
+        const app = vue.createApp(createPresetBackupPreviewRootComponent(vue, state));
+        app.mount(host);
+        extensionState[PRESET_BACKUP_PREVIEW_APP_KEY] = { host, app, state };
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} Failed to mount preset backup preview Vue app`, error);
     }
+}
+
+function createPresetBackupPreviewModel() {
+    return {
+        items: [],
+        query: '',
+        page: 1,
+        hasLoaded: false,
+        loading: false,
+        status: '',
+        composing: false,
+        renameDialogOpen: false,
+        renameTarget: null,
+        renameValue: '',
+        renameComposing: false,
+        renaming: false,
+        deleteDialogOpen: false,
+        deleteTarget: null,
+        deleting: false,
+        importingFileName: '',
+        closing: false,
+        animating: false,
+    };
+}
+
+function createPresetBackupPreviewRootComponent(vue, model) {
+    const h = vue.h;
+
+    return {
+        name: 'PresetBackupPreview',
+        data() {
+            return model;
+        },
+        computed: {
+            normalizedQuery() {
+                return this.query.trim().toLowerCase();
+            },
+            filteredItems() {
+                if (!this.normalizedQuery) {
+                    return this.items;
+                }
+
+                return this.items.filter(item => item.searchText.includes(this.normalizedQuery));
+            },
+            pageCount() {
+                return Math.max(1, Math.ceil(this.filteredItems.length / PRESET_BACKUP_PREVIEW_PAGE_SIZE));
+            },
+            safePage() {
+                return Math.min(Math.max(1, this.page), this.pageCount);
+            },
+            pagedItems() {
+                const page = this.safePage;
+                const start = (page - 1) * PRESET_BACKUP_PREVIEW_PAGE_SIZE;
+                return this.filteredItems.slice(start, start + PRESET_BACKUP_PREVIEW_PAGE_SIZE);
+            },
+            displayStatus() {
+                if (this.status) {
+                    return this.status;
+                }
+
+                const total = this.items.length;
+                const visibleCount = this.filteredItems.length;
+
+                if (total <= 0) {
+                    return '';
+                }
+
+                const firstVisible = visibleCount > 0 ? (this.safePage - 1) * PRESET_BACKUP_PREVIEW_PAGE_SIZE + 1 : 0;
+                const lastVisible = visibleCount > 0 ? Math.min(this.safePage * PRESET_BACKUP_PREVIEW_PAGE_SIZE, visibleCount) : 0;
+
+                return this.normalizedQuery
+                    ? `\u663e\u793a ${firstVisible}-${lastVisible} / ${visibleCount} \u4e2a\u5339\u914d\u5907\u4efd\uff0c\u5171 ${total} \u4e2a\u5907\u4efd`
+                    : `\u663e\u793a ${firstVisible}-${lastVisible} / ${total} \u4e2a\u5907\u4efd`;
+            },
+        },
+        watch: {
+            page() {
+                this.clampPage();
+            },
+            filteredItems() {
+                this.clampPage();
+            },
+        },
+        methods: {
+            clampPage() {
+                const nextPage = Math.min(Math.max(1, this.page), this.pageCount);
+
+                if (nextPage !== this.page) {
+                    this.page = nextPage;
+                }
+            },
+            setQuery(value) {
+                this.query = String(value ?? '');
+                this.page = 1;
+            },
+            onSearchInput(event) {
+                if (event?.isComposing || this.composing) {
+                    return;
+                }
+
+                this.setQuery(event?.target?.value ?? '');
+            },
+            onSearchCompositionStart() {
+                this.composing = true;
+            },
+            onSearchCompositionEnd(event) {
+                this.composing = false;
+                this.setQuery(event?.target?.value ?? '');
+            },
+            async refresh() {
+                if (this.loading) {
+                    return;
+                }
+
+                this.loading = true;
+                this.status = '\u6b63\u5728\u5237\u65b0\u5907\u4efd\u5217\u8868...';
+
+                try {
+                    this.items = await fetchPresetBackupPreviewItems();
+                    this.page = 1;
+                    this.hasLoaded = true;
+                    this.status = '';
+                } catch (error) {
+                    console.warn(`${LOG_PREFIX} Failed to refresh preset backups`, error);
+                    this.status = `\u5237\u65b0\u5931\u8d25\uff1a${error?.message || '\u672a\u77e5\u9519\u8bef'}`;
+                    this.hasLoaded = true;
+                } finally {
+                    this.loading = false;
+                }
+            },
+            prevPage() {
+                this.page = Math.max(1, this.safePage - 1);
+            },
+            nextPage() {
+                this.page = Math.min(this.pageCount, this.safePage + 1);
+            },
+            openRenameDialog(item) {
+                if (!item || this.renaming || this.deleting || this.importingFileName) {
+                    return;
+                }
+
+                this.deleteDialogOpen = false;
+                this.deleteTarget = null;
+                this.renameTarget = item;
+                this.renameValue = item.name || '';
+                this.renameComposing = false;
+                this.renameDialogOpen = true;
+                this.status = '';
+
+                vue.nextTick(() => {
+                    const input = this.$refs.renameInput;
+
+                    if (input instanceof HTMLInputElement) {
+                        input.focus();
+                        input.select();
+                    }
+                });
+            },
+            closeRenameDialog(force = false) {
+                if (this.renaming && !force) {
+                    return;
+                }
+
+                this.renameDialogOpen = false;
+                this.renameTarget = null;
+                this.renameValue = '';
+                this.renameComposing = false;
+            },
+            openDeleteDialog(item) {
+                if (!item || this.deleting || this.renaming || this.importingFileName) {
+                    return;
+                }
+
+                this.renameDialogOpen = false;
+                this.renameTarget = null;
+                this.deleteTarget = item;
+                this.deleteDialogOpen = true;
+                this.status = '';
+            },
+            closeDeleteDialog(force = false) {
+                if (this.deleting && !force) {
+                    return;
+                }
+
+                this.deleteDialogOpen = false;
+                this.deleteTarget = null;
+            },
+            onRenameInput(event) {
+                this.renameValue = String(event?.target?.value ?? '');
+            },
+            onRenameCompositionStart() {
+                this.renameComposing = true;
+            },
+            onRenameCompositionEnd(event) {
+                this.renameComposing = false;
+                this.onRenameInput(event);
+            },
+            onRenameKeydown(event) {
+                if (event?.key !== 'Enter' || event.isComposing || this.renameComposing) {
+                    return;
+                }
+
+                event.preventDefault();
+                void this.confirmRename();
+            },
+            async confirmRename() {
+                const target = this.renameTarget;
+                const showName = this.renameValue.trim();
+
+                if (!target || this.renaming) {
+                    return;
+                }
+
+                if (!showName) {
+                    this.status = '\u5907\u4efd\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a';
+                    return;
+                }
+
+                this.renaming = true;
+                this.status = '\u6b63\u5728\u91cd\u547d\u540d\u5907\u4efd...';
+
+                try {
+                    const updated = normalizePresetBackupPreviewItem(await renamePresetBackupPreviewItem(target.fileName, showName));
+
+                    this.items = this.items.map(item => item.fileName === target.fileName
+                        ? (updated || {
+                            ...item,
+                            name: formatPresetBackupPreviewDisplayName(showName),
+                            searchText: `${formatPresetBackupPreviewDisplayName(showName)} ${item.createdAt}`.toLowerCase(),
+                        })
+                        : item);
+                    this.status = `\u5df2\u91cd\u547d\u540d\uff1a${formatPresetBackupPreviewDisplayName(showName)}`;
+                    this.closeRenameDialog(true);
+                } catch (error) {
+                    console.warn(`${LOG_PREFIX} Failed to rename preset backup`, error);
+                    this.status = `\u91cd\u547d\u540d\u5931\u8d25\uff1a${error?.message || '\u672a\u77e5\u9519\u8bef'}`;
+                } finally {
+                    this.renaming = false;
+                }
+            },
+            async confirmDelete() {
+                const target = this.deleteTarget;
+
+                if (!target || this.deleting) {
+                    return;
+                }
+
+                this.deleting = true;
+                this.status = '\u6b63\u5728\u5220\u9664\u5907\u4efd...';
+
+                try {
+                    await deletePresetBackupPreviewItem(target.fileName);
+                    this.items = this.items.filter(item => item.fileName !== target.fileName);
+                    this.status = `\u5df2\u5220\u9664\uff1a${target.name || target.fileName}`;
+                    this.closeDeleteDialog(true);
+                } catch (error) {
+                    console.warn(`${LOG_PREFIX} Failed to delete preset backup`, error);
+                    this.status = `\u5220\u9664\u5931\u8d25\uff1a${error?.message || '\u672a\u77e5\u9519\u8bef'}`;
+                } finally {
+                    this.deleting = false;
+                }
+            },
+            async importBackup(item) {
+                if (!item || this.importingFileName) {
+                    return;
+                }
+
+                this.importingFileName = item.fileName;
+                this.status = `\u6b63\u5728\u5bfc\u5165\uff1a${item.name || item.fileName}`;
+
+                try {
+                    const result = await downloadPresetBackupPreviewItem(item.fileName);
+                    const { apiId, name, preset } = normalizePresetBackupImportPayload(result, item);
+                    const manager = getPresetManager(apiId);
+
+                    if (!manager || typeof manager.savePreset !== 'function') {
+                        throw new Error(`Preset manager not found: ${apiId}`);
+                    }
+
+                    const importName = getUniquePresetBackupImportName(manager, name);
+                    const skipState = skipNextPresetAutoBackup();
+                    const skipCountBeforeSave = skipState?.skipCount ?? 0;
+
+                    try {
+                        await manager.savePreset(importName, preset);
+                    } finally {
+                        if (skipState && skipState.skipCount >= skipCountBeforeSave) {
+                            skipState.skipCount = Math.max(0, skipCountBeforeSave - 1);
+                        }
+                    }
+
+                    this.status = `\u5df2\u5bfc\u5165\u5e76\u5207\u6362\uff1a${importName}`;
+                } catch (error) {
+                    console.warn(`${LOG_PREFIX} Failed to import preset backup`, error);
+                    this.status = `\u5bfc\u5165\u5931\u8d25\uff1a${error?.message || '\u672a\u77e5\u9519\u8bef'}`;
+                } finally {
+                    this.importingFileName = '';
+                }
+            },
+            setActionStatus(action, item) {
+                const name = item?.name || '\u8fd9\u4e2a\u5907\u4efd';
+                const labels = {
+                    delete: '\u5220\u9664\u63a5\u53e3\u5f85\u63a5\u5165\uff1a',
+                    download: '\u4e0b\u8f7d\u63a5\u53e3\u5f85\u63a5\u5165\uff1a',
+                };
+
+                this.status = `${labels[action] || ''}${name}`;
+            },
+            toggleDetails(event) {
+                event?.preventDefault();
+                togglePresetBackupPreviewDetails(this.$refs.details, this);
+            },
+        },
+        render() {
+            return h('details', {
+                ref: 'details',
+                class: {
+                    'bai-bai-preset-backup-details': true,
+                    [PRESET_BACKUP_PREVIEW_CLOSING_CLASS]: this.closing,
+                },
+            }, [
+                h('summary', {
+                    class: 'bai-bai-preset-backup-summary',
+                    onClick: this.toggleDetails,
+                }, [
+                    h('span', { class: 'bai-bai-preset-backup-title' }, [
+                        h('i', { class: 'fa-solid fa-clock-rotate-left' }),
+                        h('span', '\u81ea\u52a8\u5907\u4efd\u9884\u8bbe'),
+                    ]),
+                    h('span', { class: 'bai-bai-preset-backup-summary-meta' }, [
+                        h('small', '\u5907\u4efd\u5217\u8868'),
+                        h('i', { class: 'fa-solid fa-chevron-right bai-bai-preset-backup-chevron' }),
+                    ]),
+                ]),
+                h('div', { class: 'bai-bai-preset-backup-body' }, [
+                    h('div', { class: 'bai-bai-preset-backup-toolbar' }, [
+                        h('label', { class: 'bai-bai-preset-backup-search' }, [
+                            h('i', { class: 'fa-solid fa-magnifying-glass' }),
+                            h('input', {
+                                class: 'text_pole',
+                                type: 'search',
+                                autocomplete: 'off',
+                                style: 'padding-left: 36px !important; background: transparent !important;',
+                                placeholder: '\u641c\u7d22\u5907\u4efd\u9884\u8bbe',
+                                value: this.query,
+                                onInput: this.onSearchInput,
+                                onCompositionstart: this.onSearchCompositionStart,
+                                onCompositionend: this.onSearchCompositionEnd,
+                            }),
+                        ]),
+                        h('button', {
+                            class: {
+                                menu_button: true,
+                                menu_button_icon: true,
+                                'bai-bai-preset-backup-refresh': true,
+                                'bai-bai-preset-backup-refreshing': this.loading,
+                            },
+                            type: 'button',
+                            title: '\u5237\u65b0\u5907\u4efd\u5217\u8868',
+                            disabled: this.loading,
+                            onClick: this.refresh,
+                        }, [h('i', { class: 'fa-solid fa-rotate-right' })]),
+                    ]),
+                    h('div', { class: 'bai-bai-preset-backup-list', role: 'list' }, this.pagedItems.length
+                        ? this.pagedItems.map(item => renderPresetBackupPreviewItem(h, this, item))
+                        : [h('div', { class: 'bai-bai-preset-backup-empty' }, this.hasLoaded
+                            ? '\u6682\u65e0\u5907\u4efd\u6570\u636e'
+                            : '\u5237\u65b0\u83b7\u53d6\u5907\u4efd\u6570\u636e')]),
+                    h('div', { class: 'bai-bai-preset-backup-footer' }, [
+                        h('div', { class: 'bai-bai-preset-backup-status' }, this.displayStatus),
+                        h('div', { class: 'bai-bai-preset-backup-pagination', 'aria-label': '\u5907\u4efd\u5206\u9875' }, [
+                            h('button', {
+                                class: 'menu_button menu_button_icon',
+                                type: 'button',
+                                title: '\u4e0a\u4e00\u9875',
+                                disabled: this.safePage <= 1 || this.filteredItems.length <= 0,
+                                onClick: this.prevPage,
+                            }, [h('i', { class: 'fa-solid fa-chevron-left' })]),
+                            h('span', { class: 'bai-bai-preset-backup-page-label' }, `${this.safePage} / ${this.pageCount}`),
+                            h('button', {
+                                class: 'menu_button menu_button_icon',
+                                type: 'button',
+                                title: '\u4e0b\u4e00\u9875',
+                                disabled: this.safePage >= this.pageCount || this.filteredItems.length <= 0,
+                                onClick: this.nextPage,
+                            }, [h('i', { class: 'fa-solid fa-chevron-right' })]),
+                        ]),
+                    ]),
+                    this.renameDialogOpen ? renderPresetBackupRenameDialog(h, this) : null,
+                    this.deleteDialogOpen ? renderPresetBackupDeleteDialog(h, this) : null,
+                ]),
+            ]);
+        },
+    };
+}
+
+function renderPresetBackupPreviewItem(h, view, item) {
+    return h('div', {
+        key: item.id,
+        class: 'bai-bai-preset-backup-item',
+        role: 'listitem',
+    }, [
+        h('div', { class: 'bai-bai-preset-backup-item-main' }, [
+            h('strong', {
+                class: 'bai-bai-preset-backup-item-name',
+                title: item.name,
+            }, item.name),
+            h('small', { class: 'bai-bai-preset-backup-item-time' }, [
+                h('i', { class: 'fa-regular fa-clock' }),
+                h('span', item.createdAt),
+            ]),
+        ]),
+        h('div', { class: 'bai-bai-preset-backup-item-actions' }, [
+            renderPresetBackupPreviewActionButton(h, {
+                className: 'bai-bai-preset-backup-delete',
+                icon: 'fa-solid fa-trash',
+                title: '\u5220\u9664\u5907\u4efd',
+                onClick: () => view.openDeleteDialog(item),
+            }),
+            renderPresetBackupPreviewActionButton(h, {
+                icon: 'fa-solid fa-pen-to-square',
+                title: '\u91cd\u547d\u540d\u5907\u4efd',
+                onClick: () => view.openRenameDialog(item),
+            }),
+            renderPresetBackupPreviewActionButton(h, {
+                className: view.importingFileName === item.fileName ? 'bai-bai-preset-backup-importing' : '',
+                icon: view.importingFileName === item.fileName ? 'fa-solid fa-spinner' : 'fa-solid fa-download',
+                title: '\u5bfc\u5165\u5907\u4efd\u5e76\u5207\u6362',
+                disabled: Boolean(view.importingFileName),
+                onClick: () => view.importBackup(item),
+            }),
+        ]),
+    ]);
+}
+
+function renderPresetBackupDeleteDialog(h, view) {
+    const targetName = view.deleteTarget?.name || '\u8fd9\u4e2a\u5907\u4efd';
+
+    return h('div', {
+        class: 'bai-bai-preset-backup-dialog-layer',
+        onClick: event => {
+            if (event.target === event.currentTarget) {
+                view.closeDeleteDialog();
+            }
+        },
+    }, [
+        h('div', {
+            class: 'bai-bai-preset-backup-dialog',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': '\u5220\u9664\u5907\u4efd',
+            onClick: event => event.stopPropagation(),
+        }, [
+            h('div', { class: 'bai-bai-preset-backup-dialog-head' }, [
+                h('strong', '\u5220\u9664\u5907\u4efd'),
+                h('button', {
+                    class: 'menu_button menu_button_icon',
+                    type: 'button',
+                    title: '\u5173\u95ed',
+                    disabled: view.deleting,
+                    onClick: () => view.closeDeleteDialog(),
+                }, [h('i', { class: 'fa-solid fa-xmark' })]),
+            ]),
+            h('div', { class: 'bai-bai-preset-backup-dialog-message' }, [
+                h('span', '\u786e\u5b9a\u8981\u5220\u9664\u8fd9\u4e2a\u5907\u4efd\u5417\uff1f'),
+                h('strong', { title: targetName }, targetName),
+            ]),
+            h('div', { class: 'bai-bai-preset-backup-dialog-actions' }, [
+                h('button', {
+                    class: 'menu_button bai-bai-preset-backup-dialog-button',
+                    type: 'button',
+                    disabled: view.deleting,
+                    onClick: () => view.closeDeleteDialog(),
+                }, '\u53d6\u6d88'),
+                h('button', {
+                    class: 'menu_button bai-bai-preset-backup-dialog-button bai-bai-preset-backup-dialog-danger',
+                    type: 'button',
+                    disabled: view.deleting,
+                    onClick: () => view.confirmDelete(),
+                }, view.deleting ? '\u5220\u9664\u4e2d...' : '\u5220\u9664'),
+            ]),
+        ]),
+    ]);
+}
+
+function renderPresetBackupRenameDialog(h, view) {
+    return h('div', {
+        class: 'bai-bai-preset-backup-dialog-layer',
+        onClick: event => {
+            if (event.target === event.currentTarget) {
+                view.closeRenameDialog();
+            }
+        },
+    }, [
+        h('div', {
+            class: 'bai-bai-preset-backup-dialog',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': '\u91cd\u547d\u540d\u5907\u4efd',
+            onClick: event => event.stopPropagation(),
+        }, [
+            h('div', { class: 'bai-bai-preset-backup-dialog-head' }, [
+                h('strong', '\u91cd\u547d\u540d\u5907\u4efd'),
+                h('button', {
+                    class: 'menu_button menu_button_icon',
+                    type: 'button',
+                    title: '\u5173\u95ed',
+                    disabled: view.renaming,
+                    onClick: () => view.closeRenameDialog(),
+                }, [h('i', { class: 'fa-solid fa-xmark' })]),
+            ]),
+            h('input', {
+                ref: 'renameInput',
+                class: 'text_pole bai-bai-preset-backup-dialog-input',
+                type: 'text',
+                autocomplete: 'off',
+                value: view.renameValue,
+                disabled: view.renaming,
+                onInput: view.onRenameInput,
+                onCompositionstart: view.onRenameCompositionStart,
+                onCompositionend: view.onRenameCompositionEnd,
+                onKeydown: view.onRenameKeydown,
+            }),
+            h('div', { class: 'bai-bai-preset-backup-dialog-actions' }, [
+                h('button', {
+                    class: 'menu_button bai-bai-preset-backup-dialog-button',
+                    type: 'button',
+                    disabled: view.renaming,
+                    onClick: () => view.closeRenameDialog(),
+                }, '\u53d6\u6d88'),
+                h('button', {
+                    class: 'menu_button bai-bai-preset-backup-dialog-button',
+                    type: 'button',
+                    disabled: view.renaming || !view.renameValue.trim(),
+                    onClick: () => view.confirmRename(),
+                }, view.renaming ? '\u4fdd\u5b58\u4e2d...' : '\u4fdd\u5b58'),
+            ]),
+        ]),
+    ]);
+}
+
+function renderPresetBackupPreviewActionButton(h, { className = '', icon, title, disabled = false, onClick }) {
+    return h('button', {
+        class: ['menu_button', 'menu_button_icon', className],
+        type: 'button',
+        title,
+        disabled,
+        onClick,
+    }, [h('i', { class: icon })]);
 }
 
 async function fetchPresetBackupPreviewItems() {
@@ -545,6 +1104,105 @@ async function fetchPresetBackupPreviewItems() {
         .filter(Boolean);
 }
 
+async function renamePresetBackupPreviewItem(fileName, showName) {
+    const response = await fetch(PRESET_BACKUP_PREVIEW_RENAME_URL, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ fileName, showName }),
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    return payload?.data ?? payload;
+}
+
+async function deletePresetBackupPreviewItem(fileName) {
+    const response = await fetch(PRESET_BACKUP_PREVIEW_DELETE_URL, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ fileName }),
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+
+    return response.json().catch(() => ({}));
+}
+
+async function downloadPresetBackupPreviewItem(fileName) {
+    const response = await fetch(PRESET_BACKUP_PREVIEW_DOWNLOAD_URL, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ fileName }),
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    return payload?.data ?? payload;
+}
+
+function normalizePresetBackupImportPayload(result, item) {
+    const body = result?.body && typeof result.body === 'object' ? result.body : result;
+    const apiId = typeof body?.apiId === 'string' && body.apiId.trim() ? body.apiId.trim() : 'openai';
+    const preset = body?.preset && typeof body.preset === 'object' ? body.preset : body;
+    const resultShowName = typeof result?.showName === 'string' && result.showName !== result?.fileName
+        ? result.showName
+        : '';
+    const name = String(
+        resultShowName
+        || body?.name
+        || item?.name
+        || formatPresetBackupPreviewDisplayName(item?.fileName || ''),
+    ).trim();
+
+    if (!preset || typeof preset !== 'object' || Array.isArray(preset)) {
+        throw new Error('Invalid preset backup data');
+    }
+
+    return {
+        apiId,
+        name: name || '\u5907\u4efd\u9884\u8bbe',
+        preset: clonePresetBackupImportPreset(preset),
+    };
+}
+
+function clonePresetBackupImportPreset(preset) {
+    if (typeof structuredClone === 'function') {
+        return structuredClone(preset);
+    }
+
+    return JSON.parse(JSON.stringify(preset));
+}
+
+function getUniquePresetBackupImportName(manager, name) {
+    const baseName = String(name || '\u5907\u4efd\u9884\u8bbe').trim() || '\u5907\u4efd\u9884\u8bbe';
+    const existingNames = typeof manager.getAllPresets === 'function'
+        ? manager.getAllPresets().map(value => String(value))
+        : [];
+    const existing = new Set(existingNames);
+
+    if (!existing.has(baseName)) {
+        return baseName;
+    }
+
+    for (let index = 1; index <= 999; index += 1) {
+        const nextName = `${baseName} ${index}`;
+
+        if (!existing.has(nextName)) {
+            return nextName;
+        }
+    }
+
+    return `${baseName} ${Date.now()}`;
+}
+
 function normalizePresetBackupPreviewItem(item) {
     if (!item || typeof item !== 'object') {
         return null;
@@ -556,11 +1214,30 @@ function normalizePresetBackupPreviewItem(item) {
         return null;
     }
 
+    const rawName = String(item.showName || item.displayName || item.presetName || '').trim();
+    const name = rawName && rawName !== fileName
+        ? rawName
+        : formatPresetBackupPreviewDisplayName(fileName);
+    const createdAt = formatPresetBackupPreviewTime(item.createdAt ?? item.createdAtMs);
+
     return {
         id: fileName,
-        name: fileName,
-        createdAt: formatPresetBackupPreviewTime(item.createdAt ?? item.createdAtMs),
+        name,
+        fileName,
+        createdAt,
+        searchText: `${name} ${createdAt}`.toLowerCase(),
     };
+}
+
+function formatPresetBackupPreviewDisplayName(fileName) {
+    const withoutExtension = String(fileName || '').replace(/\.json$/i, '');
+    const timestampNameMatch = /^\d{8}_\d{6}__(.+)$/.exec(withoutExtension);
+
+    if (timestampNameMatch?.[1]) {
+        return timestampNameMatch[1];
+    }
+
+    return withoutExtension || String(fileName || '');
 }
 
 function formatPresetBackupPreviewTime(value) {
@@ -580,183 +1257,74 @@ function formatPresetBackupPreviewTime(value) {
 
     return '\u65f6\u95f4\u672a\u77e5';
 }
-function filterPresetBackupPreviewItems(host) {
-    const input = host.querySelector('[data-preset-backup-search]');
-    const query = input instanceof HTMLInputElement ? input.value.trim().toLowerCase() : '';
-    const rows = Array.from(host.querySelectorAll('[data-preset-backup-row]'));
-    const matchedRows = rows.filter(row => {
-        if (!(row instanceof HTMLElement)) {
-            return false;
+
+function togglePresetBackupPreviewDetails(details, model = null) {
+    const summary = details?.querySelector?.('.bai-bai-preset-backup-summary');
+
+    if (!(details instanceof HTMLDetailsElement) || !(summary instanceof HTMLElement)) {
+        if (details instanceof HTMLDetailsElement) {
+            details.open = !details.open;
         }
-
-        const text = String(row.dataset.presetBackupSearch || '').toLowerCase();
-        return !query || text.includes(query);
-    });
-    const total = rows.length;
-    const visibleCount = matchedRows.length;
-    const pageCount = Math.max(1, Math.ceil(visibleCount / PRESET_BACKUP_PREVIEW_PAGE_SIZE));
-    const page = clampPresetBackupPreviewPage(getPresetBackupPreviewPage(host), pageCount);
-    const pageStart = (page - 1) * PRESET_BACKUP_PREVIEW_PAGE_SIZE;
-    const pageEnd = pageStart + PRESET_BACKUP_PREVIEW_PAGE_SIZE;
-    const visibleRowSet = new Set(matchedRows.slice(pageStart, pageEnd));
-
-    for (const row of rows) {
-        if (!(row instanceof HTMLElement)) {
-            continue;
-        }
-
-        row.hidden = !visibleRowSet.has(row);
-    }
-
-    setPresetBackupPreviewPage(host, page);
-    syncPresetBackupPreviewPagination(host, {
-        page,
-        pageCount,
-        total,
-        visibleCount,
-        pageVisibleCount: visibleRowSet.size,
-    });
-
-    const empty = host.querySelector('[data-preset-backup-empty]');
-
-    if (empty instanceof HTMLElement) {
-        empty.hidden = visibleCount > 0;
-    }
-
-    if (total === 0) {
-        setPresetBackupPreviewStatus(host, '');
         return;
     }
 
-    const firstVisible = visibleCount > 0 ? pageStart + 1 : 0;
-    const lastVisible = visibleCount > 0 ? Math.min(pageEnd, visibleCount) : 0;
-    setPresetBackupPreviewStatus(
-        host,
-        query
-            ? `\u663e\u793a ${firstVisible}-${lastVisible} / ${visibleCount} \u4e2a\u5339\u914d\u5907\u4efd\uff0c\u5171 ${total} \u4e2a\u5907\u4efd`
-            : `\u663e\u793a ${firstVisible}-${lastVisible} / ${total} \u4e2a\u5907\u4efd`,
+    const shouldReduceMotion = typeof matchMedia === 'function'
+        && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (shouldReduceMotion || typeof details.animate !== 'function') {
+        details.open = !details.open;
+        return;
+    }
+
+    if (model?.animating) {
+        return;
+    }
+
+    const isClosing = details.open;
+
+    if (model) {
+        model.animating = true;
+        model.closing = isClosing;
+    }
+
+    details.style.overflow = 'hidden';
+
+    const startHeight = details.offsetHeight;
+    const endHeight = isClosing ? summary.offsetHeight : (() => {
+        details.style.height = `${startHeight}px`;
+        details.open = true;
+        return details.scrollHeight;
+    })();
+
+    details.style.height = `${startHeight}px`;
+
+    const animation = details.animate(
+        { height: [`${startHeight}px`, `${endHeight}px`] },
+        {
+            duration: PRESET_BACKUP_PREVIEW_EXPAND_ANIMATION_MS,
+            easing: 'ease',
+        },
     );
-}
-function getPresetBackupPreviewPage(host) {
-    return Math.max(1, Number(host.dataset.presetBackupPage) || 1);
-}
 
-function setPresetBackupPreviewPage(host, page) {
-    host.dataset.presetBackupPage = String(Math.max(1, Number(page) || 1));
-}
+    const cleanup = () => {
+        details.style.height = '';
+        details.style.overflow = '';
 
-function clampPresetBackupPreviewPage(page, pageCount) {
-    return Math.min(Math.max(1, Number(page) || 1), Math.max(1, Number(pageCount) || 1));
-}
+        if (model) {
+            model.animating = false;
+            model.closing = false;
+        }
+    };
 
-function syncPresetBackupPreviewPagination(host, { page, pageCount, visibleCount }) {
-    const pageLabel = host.querySelector('[data-preset-backup-page-label]');
-    const prevButton = host.querySelector('[data-preset-backup-action="prev-page"]');
-    const nextButton = host.querySelector('[data-preset-backup-action="next-page"]');
+    animation.onfinish = () => {
+        if (startHeight > endHeight) {
+            details.open = false;
+        }
 
-    if (pageLabel instanceof HTMLElement) {
-        pageLabel.textContent = `${page} / ${pageCount}`;
-    }
+        cleanup();
+    };
 
-    if (prevButton instanceof HTMLButtonElement) {
-        prevButton.disabled = page <= 1 || visibleCount <= 0;
-    }
-
-    if (nextButton instanceof HTMLButtonElement) {
-        nextButton.disabled = page >= pageCount || visibleCount <= 0;
-    }
-}
-
-function setPresetBackupPreviewStatus(host, text) {
-    const status = host.querySelector('[data-preset-backup-status]');
-
-    if (status instanceof HTMLElement) {
-        status.textContent = text;
-    }
-}
-
-function renderPresetBackupPreviewUiHtml() {
-    return `
-        <details class="bai-bai-preset-backup-details">
-            <summary class="bai-bai-preset-backup-summary">
-                <span class="bai-bai-preset-backup-title">
-                    <i class="fa-solid fa-clock-rotate-left"></i>
-                    <span>\u81ea\u52a8\u5907\u4efd\u9884\u8bbe</span>
-                </span>
-                <span class="bai-bai-preset-backup-summary-meta">
-                    <small>\u5907\u4efd\u5217\u8868</small>
-                    <i class="fa-solid fa-chevron-right bai-bai-preset-backup-chevron"></i>
-                </span>
-            </summary>
-            <div class="bai-bai-preset-backup-body">
-                <div class="bai-bai-preset-backup-toolbar">
-                    <label class="bai-bai-preset-backup-search">
-                        <i class="fa-solid fa-magnifying-glass"></i>
-                        <input class="text_pole" type="search" placeholder="\u641c\u7d22\u5907\u4efd\u9884\u8bbe" autocomplete="off" data-preset-backup-search>
-                    </label>
-                    <button class="menu_button menu_button_icon bai-bai-preset-backup-refresh" type="button" title="\u5237\u65b0\u5907\u4efd\u5217\u8868" data-preset-backup-action="refresh">
-                        <i class="fa-solid fa-rotate-right"></i>
-                    </button>
-                </div>
-                <div class="bai-bai-preset-backup-status" data-preset-backup-status></div>
-                <div class="bai-bai-preset-backup-list" role="list">
-                    ${renderPresetBackupPreviewEmptyHtml()}
-                </div>
-                <div class="bai-bai-preset-backup-pagination" aria-label="\u5907\u4efd\u5206\u9875">
-                    <button class="menu_button menu_button_icon" type="button" title="\u4e0a\u4e00\u9875" data-preset-backup-action="prev-page">
-                        <i class="fa-solid fa-chevron-left"></i>
-                    </button>
-                    <span class="bai-bai-preset-backup-page-label" data-preset-backup-page-label>1 / 1</span>
-                    <button class="menu_button menu_button_icon" type="button" title="\u4e0b\u4e00\u9875" data-preset-backup-action="next-page">
-                        <i class="fa-solid fa-chevron-right"></i>
-                    </button>
-                </div>
-            </div>
-        </details>
-    `;
-}
-
-function renderPresetBackupPreviewList(host, items) {
-    const list = host.querySelector('.bai-bai-preset-backup-list');
-
-    if (list instanceof HTMLElement) {
-        list.innerHTML = `${renderPresetBackupPreviewItemsHtml(items)}${renderPresetBackupPreviewEmptyHtml()}`;
-    }
-}
-
-function renderPresetBackupPreviewEmptyHtml() {
-    return '<div class="bai-bai-preset-backup-empty" data-preset-backup-empty>\u6682\u65e0\u5907\u4efd\u6570\u636e</div>';
-}
-
-function renderPresetBackupPreviewItemsHtml(items) {
-    return items.map(item => {
-        const name = escapeHtml(item.name);
-        const createdAt = escapeHtml(item.createdAt);
-        const searchText = escapeHtml(`${item.name} ${item.createdAt}`);
-
-        return `
-            <div class="bai-bai-preset-backup-item" role="listitem" data-preset-backup-row data-preset-backup-id="${escapeHtml(item.id)}" data-preset-backup-name="${name}" data-preset-backup-search="${searchText}">
-                <div class="bai-bai-preset-backup-item-main">
-                    <strong class="bai-bai-preset-backup-item-name" title="${name}">${name}</strong>
-                    <small class="bai-bai-preset-backup-item-time">
-                        <i class="fa-regular fa-clock"></i>
-                        <span>${createdAt}</span>
-                    </small>
-                </div>
-                <div class="bai-bai-preset-backup-item-actions">
-                    <button class="menu_button menu_button_icon bai-bai-preset-backup-delete" type="button" title="\u5220\u9664\u5907\u4efd\uff08\u5360\u4f4d\uff09" data-preset-backup-action="delete">
-                        <i class="fa-solid fa-trash"></i>
-                    </button>
-                    <button class="menu_button menu_button_icon" type="button" title="\u7f16\u8f91\u5907\u4efd\u540d\u79f0\uff08\u5360\u4f4d\uff09" data-preset-backup-action="rename">
-                        <i class="fa-solid fa-pen-to-square"></i>
-                    </button>
-                    <button class="menu_button menu_button_icon" type="button" title="\u4e0b\u8f7d\u5907\u4efd\uff08\u5360\u4f4d\uff09" data-preset-backup-action="download">
-                        <i class="fa-solid fa-download"></i>
-                    </button>
-                </div>
-            </div>
-        `;
-    }).join('');
+    animation.oncancel = cleanup;
 }
 function applyPresetBackupPreviewUiStyle() {
     let style = document.getElementById(PRESET_BACKUP_PREVIEW_UI_STYLE_ID);
@@ -832,6 +1400,7 @@ function applyPresetBackupPreviewUiStyle() {
 }
 
 #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-body {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -850,20 +1419,22 @@ function applyPresetBackupPreviewUiStyle() {
     align-items: center;
     flex: 1 1 auto;
     min-width: 0;
+    overflow: hidden;
 }
 
 #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-search i {
     position: absolute;
-    left: 10px;
+    left: 12px;
     z-index: 1;
     opacity: 0.62;
     pointer-events: none;
 }
 
-#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-search input {
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-search input.text_pole[type="search"] {
     width: 100%;
     min-width: 0;
-    padding-left: 30px !important;
+    padding-left: 36px !important;
+    background: transparent !important;
 }
 
 #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-refresh {
@@ -874,10 +1445,8 @@ function applyPresetBackupPreviewUiStyle() {
     animation: bai-bai-preset-backup-spin 0.45s linear infinite;
 }
 
-#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-status {
-    min-height: 1.2em;
-    font-size: 0.86em;
-    opacity: 0.72;
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-importing i {
+    animation: bai-bai-preset-backup-spin 0.55s linear infinite;
 }
 
 #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-list {
@@ -896,7 +1465,6 @@ function applyPresetBackupPreviewUiStyle() {
     padding: 7px 8px;
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 6px;
-    background: color-mix(in srgb, var(--SmartThemeChatTintColor) 42%, transparent);
 }
 
 #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item[hidden],
@@ -936,7 +1504,8 @@ function applyPresetBackupPreviewUiStyle() {
 
 #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item-actions .menu_button,
 #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-refresh,
-#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-pagination .menu_button {
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-pagination .menu_button,
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-head .menu_button {
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
@@ -965,10 +1534,29 @@ function applyPresetBackupPreviewUiStyle() {
     opacity: 0.72;
 }
 
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: calc(var(--mainFontSize) * 1.8);
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.86em;
+    opacity: 0.72;
+}
+
 #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-pagination {
     display: flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 auto;
     gap: 8px;
 }
 
@@ -977,6 +1565,84 @@ function applyPresetBackupPreviewUiStyle() {
     text-align: center;
     font-size: 0.9em;
     opacity: 0.78;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 12;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100%;
+    padding: 10px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 46%, transparent);
+    backdrop-filter: blur(2px);
+    animation: bai-bai-preset-backup-layer-in 0.14s ease both;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(100%, 360px);
+    padding: 12px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: var(--SmartThemeBlurTintColor);
+    box-shadow: 0 12px 32px color-mix(in srgb, #000 28%, transparent);
+    animation: bai-bai-preset-backup-dialog-in 0.18s ease both;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-head,
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-input {
+    width: 100%;
+    min-width: 0;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-message {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    line-height: 1.35;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-message strong {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-actions {
+    justify-content: flex-end;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-button {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    flex: 0 0 auto !important;
+    min-width: 4.8em !important;
+    width: auto !important;
+    max-width: none !important;
+    min-height: calc(var(--mainFontSize) * 2) !important;
+    padding: 0 12px !important;
+    line-height: 1.2 !important;
+    white-space: nowrap !important;
+    writing-mode: horizontal-tb !important;
+}
+
+#${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-danger {
+    color: #d86666 !important;
 }
 
 @keyframes bai-bai-preset-backup-spin {
@@ -989,7 +1655,45 @@ function applyPresetBackupPreviewUiStyle() {
     }
 }
 
+@keyframes bai-bai-preset-backup-layer-in {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes bai-bai-preset-backup-dialog-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px) scale(0.97);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
 @media (max-width: 600px) {
+    #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog-layer {
+        position: fixed;
+        inset: 0;
+        min-height: 100dvh;
+        padding: 18px;
+        background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 60%, transparent);
+    }
+
+    #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-dialog {
+        width: min(100%, 420px);
+    }
+
+    #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-footer {
+        gap: 6px;
+    }
+
     #${PRESET_BACKUP_PREVIEW_UI_ID} .bai-bai-preset-backup-item {
         align-items: flex-start;
     }
@@ -10074,6 +10778,7 @@ function removePresetPromptCodeMirrorEditorStyle() {
 }
 
 export {
+    applyPresetAutoBackup,
     applyPresetBackupPreviewUi,
     applyPresetDragOptimization,
     applyPresetGrouping,
@@ -10084,4 +10789,5 @@ export {
     applyPresetToggleOptimization,
     cancelPromptManagerCustomDragPending,
     finishPromptManagerCustomDrag,
+    setPresetAutoBackupBackendAvailable,
 };
