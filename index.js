@@ -5455,6 +5455,9 @@ function buildRegexVueListModel(scriptType) {
     const scripts = getRegexScriptsByType(scriptType);
     const groupState = getRegexGroupStateForScriptType(scriptType);
     normalizeRegexGroupState(groupState);
+    if (syncRegexGroupScriptOrderMetaFromScriptArray(groupState, scripts)) {
+        saveRegexGroupSettings();
+    }
 
     const groupsById = new Map();
     const realGroups = groupState.groups
@@ -7084,6 +7087,54 @@ function normalizeRegexGroupState(groupState) {
     };
 }
 
+function getNormalizedRegexGroupId(groupId, validGroupIds) {
+    if (groupId === REGEX_PENDING_ASSIGNMENT_GROUP_ID) {
+        return REGEX_PENDING_ASSIGNMENT_GROUP_ID;
+    }
+
+    if (groupId === REGEX_UNGROUPED_GROUP_ID || !validGroupIds.has(groupId)) {
+        return REGEX_UNGROUPED_GROUP_ID;
+    }
+
+    return groupId;
+}
+
+function syncRegexGroupScriptOrderMetaFromScriptArray(groupState, scripts) {
+    if (!groupState?.scripts || typeof groupState.scripts !== 'object' || !Array.isArray(scripts)) {
+        return false;
+    }
+
+    const validGroupIds = new Set((groupState.groups ?? []).map(group => group.id));
+    const nextOrderByGroupId = new Map();
+    let changed = false;
+
+    for (const script of scripts) {
+        const scriptId = script?.id;
+
+        if (!scriptId) {
+            continue;
+        }
+
+        const meta = groupState.scripts[scriptId];
+        const groupId = getNormalizedRegexGroupId(meta?.groupId, validGroupIds);
+        const nextOrder = nextOrderByGroupId.get(groupId) ?? 0;
+
+        nextOrderByGroupId.set(groupId, nextOrder + 1);
+
+        if (!meta || typeof meta !== 'object') {
+            continue;
+        }
+
+        if (meta.groupId !== groupId || Number(meta.order) !== nextOrder) {
+            meta.groupId = groupId;
+            meta.order = nextOrder;
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
 function saveRegexGroupSettings() {
     extension_settings[SETTINGS_KEY].regexListGroups = settings.regexListGroups;
     markRegexGroupSettingsSavePending();
@@ -7744,6 +7795,7 @@ async function bulkMoveRegexVueSelectedScriptsToGroup(scriptType, targetGroupId)
         };
         nextOrder += 1;
     }
+    sortRegexScriptsByGroupMeta(scripts, groupState);
 
     try {
         saveRegexGroupSettings();
@@ -7763,6 +7815,51 @@ async function bulkMoveRegexVueSelectedScriptsToGroup(scriptType, targetGroupId)
         toastr.error(t`Failed to move regex script. See console for details.`);
         syncRegexVueManagerState();
     }
+}
+
+function sortRegexScriptsByGroupMeta(scripts, groupState) {
+    if (!Array.isArray(scripts) || !groupState) {
+        return false;
+    }
+
+    normalizeRegexGroupState(groupState);
+
+    const validGroupIds = new Set((groupState.groups ?? []).map(group => group.id));
+    const groupOrder = [
+        REGEX_PENDING_ASSIGNMENT_GROUP_ID,
+        ...(groupState.groups ?? []).map(group => group.id),
+        REGEX_UNGROUPED_GROUP_ID,
+    ];
+    const buckets = new Map(groupOrder.map(groupId => [groupId, []]));
+
+    for (let index = 0; index < scripts.length; index++) {
+        const script = scripts[index];
+        const meta = script?.id ? groupState.scripts?.[script.id] : null;
+        const groupId = getNormalizedRegexGroupId(meta?.groupId, validGroupIds);
+        const order = Number.isFinite(Number(meta?.order)) ? Number(meta.order) : index;
+
+        if (!buckets.has(groupId)) {
+            buckets.set(groupId, []);
+        }
+
+        buckets.get(groupId).push({ script, order, index });
+    }
+
+    const sortedScripts = [];
+
+    for (const groupId of groupOrder) {
+        const bucket = buckets.get(groupId) ?? [];
+        bucket
+            .sort((left, right) => left.order - right.order || left.index - right.index)
+            .forEach(item => sortedScripts.push(item.script));
+    }
+
+    if (sortedScripts.length !== scripts.length) {
+        return false;
+    }
+
+    scripts.splice(0, scripts.length, ...sortedScripts);
+    return true;
 }
 
 function canMoveRegexScriptsToType(toType) {
@@ -8007,20 +8104,28 @@ async function openOptimizedRegexEditorWithScript(scriptType, script) {
 
     const scripts = getRegexScriptsByType(scriptType);
     const existingIndex = scripts.findIndex(item => item?.id === updatedScript.id);
-    const previousScript = existingIndex === -1 ? null : scripts[existingIndex];
+    const previousScript = existingIndex === -1 ? null : { ...scripts[existingIndex] };
 
     if (existingIndex === -1) {
         scripts.push(updatedScript);
     } else {
-        scripts[existingIndex] = updatedScript;
+        Object.assign(scripts[existingIndex], updatedScript);
     }
 
     try {
         await saveRegexScriptList(scriptType, scripts);
         allowRegexScriptTypeAfterEditSave(scriptType);
-        ensureRegexScriptGroupMeta(scriptType, updatedScript.id, { pendingAssignment: existingIndex === -1 });
-        saveRegexGroupSettings();
-        await syncRegexVueManagerAfterDataChange();
+        const scriptGroupMetaChanged = ensureRegexScriptGroupMeta(scriptType, updatedScript.id, { pendingAssignment: existingIndex === -1 });
+        const currentOrderPreserved = preserveRegexVueCurrentOrderInGroupMeta(scriptType);
+        const groupMetaChanged = scriptGroupMetaChanged || currentOrderPreserved;
+        if (groupMetaChanged) {
+            saveRegexGroupSettings();
+        }
+        if (existingIndex === -1) {
+            await syncRegexVueManagerAfterDataChange();
+        } else {
+            updateRegexVueScriptModelAfterEdit(scriptType, updatedScript.id, scripts[existingIndex]);
+        }
         queueRegexChatReloadAfterPanelClose();
     } catch (error) {
         if (existingIndex === -1) {
@@ -8030,18 +8135,79 @@ async function openOptimizedRegexEditorWithScript(scriptType, script) {
                 scripts.splice(insertedIndex, 1);
             }
         } else {
-            scripts[existingIndex] = previousScript;
+            Object.assign(scripts[existingIndex], previousScript);
+            updateRegexVueScriptModelAfterEdit(scriptType, updatedScript.id, scripts[existingIndex]);
         }
 
         console.debug(`${LOG_PREFIX} Failed to save regex script`, error);
         toastr.error(t`Failed to save regex script. See console for details.`);
-        syncRegexVueManagerState();
+        if (existingIndex === -1) {
+            syncRegexVueManagerState();
+        }
     }
+}
+
+function updateRegexVueScriptModelAfterEdit(scriptType, scriptId, script) {
+    const modelScript = getRegexVueScriptModelById(scriptType, scriptId);
+
+    if (!modelScript || !script) {
+        return false;
+    }
+
+    if (modelScript !== script) {
+        Object.assign(modelScript, script);
+    }
+
+    return true;
+}
+
+function preserveRegexVueCurrentOrderInGroupMeta(scriptType) {
+    const manager = getRegexVueManagerState();
+    const typeKey = getRegexScriptTypeKey(scriptType);
+    const list = manager.state?.lists?.[typeKey];
+
+    if (!list) {
+        return false;
+    }
+
+    const groupState = getRegexGroupStateForScriptType(scriptType);
+    let changed = false;
+
+    for (const group of list.groups ?? []) {
+        const groupId = group.isPendingAssignment
+            ? REGEX_PENDING_ASSIGNMENT_GROUP_ID
+            : group.isUngrouped
+                ? REGEX_UNGROUPED_GROUP_ID
+                : group.id;
+
+        let order = 0;
+
+        for (const script of group.scripts ?? []) {
+            if (!script?.id) {
+                continue;
+            }
+
+            const previousMeta = groupState.scripts[script.id];
+            const nextMeta = { groupId, order };
+
+            if (
+                previousMeta?.groupId !== nextMeta.groupId
+                || Number(previousMeta?.order) !== nextMeta.order
+            ) {
+                groupState.scripts[script.id] = nextMeta;
+                changed = true;
+            }
+
+            order += 1;
+        }
+    }
+
+    return changed;
 }
 
 function ensureRegexScriptGroupMeta(scriptType, scriptId, { pendingAssignment = false } = {}) {
     if (!scriptId) {
-        return;
+        return false;
     }
 
     const groupState = getRegexGroupStateForScriptType(scriptType);
@@ -8052,16 +8218,22 @@ function ensureRegexScriptGroupMeta(scriptType, scriptId, { pendingAssignment = 
             groupId: pendingAssignment ? REGEX_PENDING_ASSIGNMENT_GROUP_ID : REGEX_UNGROUPED_GROUP_ID,
             order: Object.keys(groupState.scripts).length,
         };
-        return;
+        return true;
     }
+
+    let changed = false;
 
     if (!existingMeta.groupId) {
         existingMeta.groupId = REGEX_UNGROUPED_GROUP_ID;
+        changed = true;
     }
 
     if (!Number.isFinite(Number(existingMeta.order))) {
         existingMeta.order = Object.keys(groupState.scripts).length;
+        changed = true;
     }
+
+    return changed;
 }
 
 async function restoreRegexRowsAfterVueManagerRemove() {
