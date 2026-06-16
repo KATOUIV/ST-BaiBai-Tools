@@ -22,7 +22,7 @@ import { sendMessageAs } from '../../../slash-commands.js';
 import { isAdmin } from '../../../user.js';
 import { debounce, download, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4 } from '../../../utils.js';
 import { getCurrentPresetAPI as getRegexCurrentPresetAPI, getCurrentPresetName as getRegexCurrentPresetName, getScriptsByType as getRegexScriptsByType, runRegexScript, SCRIPT_TYPES as REGEX_SCRIPT_TYPES, substitute_find_regex } from '../../regex/engine.js';
-const CURRENT_VERSION = '0.26.8';
+const CURRENT_VERSION = '0.26.9';
 const LOCAL_ASSET_VERSION = getLocalAssetVersion(CURRENT_VERSION);
 const { SaveGenerateDisplay } = await importVersionedLocalModule('./saveGenerateDisplay.js');
 const chatOptimizations = await importVersionedLocalModule('./chatOptimizations.js');
@@ -49,6 +49,7 @@ const BAIBAOKU_THEME_LOADING_HOST_CLASS = 'bai-bai-toolkit-theme-loading-host';
 const BAIBAOKU_THEME_LOADING_OVERLAY_CLASS = 'bai-bai-toolkit-theme-loading-overlay';
 const BAIBAOKU_THEME_LOADING_FIXED_CLASS = 'bai-bai-toolkit-theme-loading-overlay-fixed';
 const BAIBAOKU_THEME_LOADING_SPINNER_CLASS = 'bai-bai-toolkit-theme-loading-spinner';
+const baibaokuThemePageCache = new Map();
 const THEME_MANAGER_PANEL_SELECTOR = '#theme-manager-panel';
 const THEME_MANAGER_BACKGROUND_BINDINGS_KEY = 'themeManager_backgroundBindings';
 const THEME_MANAGER_THEME_ITEM_SELECTOR = `${THEME_MANAGER_PANEL_SELECTOR} .theme-item[data-value]`;
@@ -343,6 +344,7 @@ const defaultSettings = {
     worldInfoPageOptimizationEnabled: false,
     characterSearchInputOptimizationEnabled: true,
     baibaokuSettingsAccelerationEnabled: true,
+    baibaokuLazyThemeLoadingEnabled: true,
     fastCharacterListEnabled: true,
     recentChatListAccelerationEnabled: true,
     progressiveChatLoadingEnabled: false,
@@ -588,6 +590,36 @@ async function fetchBaibaokuThemeByName(name) {
     }
 
     return theme;
+}
+
+async function loadBaibaokuThemeByName(name) {
+    const cacheKey = String(name || '').trim();
+    if (cacheKey && baibaokuThemePageCache.has(cacheKey)) {
+        return baibaokuThemePageCache.get(cacheKey);
+    }
+
+    const theme = await fetchBaibaokuThemeByName(name);
+    if (cacheKey) {
+        baibaokuThemePageCache.set(cacheKey, theme);
+    }
+    return theme;
+}
+
+function cacheBaibaokuCurrentThemeSnapshot(name) {
+    const cacheKey = String(name || '').trim();
+    if (!cacheKey || baibaokuThemePageCache.has(cacheKey)) {
+        return false;
+    }
+
+    const theme = { name: cacheKey };
+    for (const key of BAIBAOKU_THEME_POWER_USER_KEYS) {
+        if (power_user[key] !== undefined) {
+            theme[key] = power_user[key];
+        }
+    }
+
+    baibaokuThemePageCache.set(cacheKey, theme);
+    return true;
 }
 
 function applyBaibaokuThemeColorBindings() {
@@ -914,6 +946,8 @@ function applyBaibaokuThemeObject(theme, fallbackName) {
         throw new Error('Theme name is missing');
     }
 
+    baibaokuThemePageCache.set(themeName, { ...theme, name: themeName });
+
     const oldChatDisplay = power_user.chat_display;
     const oldToastrPosition = power_user.toastr_position;
     power_user.theme = themeName;
@@ -959,7 +993,7 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
             return;
         }
 
-        if (settings.baibaokuSettingsAccelerationEnabled === false) {
+        if (settings.baibaokuSettingsAccelerationEnabled === false || settings.baibaokuLazyThemeLoadingEnabled === false) {
             state.currentThemeName = themeName;
             return;
         }
@@ -974,14 +1008,14 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
         event.stopImmediatePropagation();
 
         const previousThemeName = state.currentThemeName || String(power_user?.theme || '');
+        if (previousThemeName && previousThemeName !== themeName) {
+            cacheBaibaokuCurrentThemeSnapshot(previousThemeName);
+        }
         const loadingToken = showBaibaokuThemeLoadingOverlay(state, target);
         setBaibaokuThemeSelectBusy(target, true);
 
-        state.pending = fetchBaibaokuThemeByName(themeName)
+        state.pending = loadBaibaokuThemeByName(themeName)
             .then((theme) => {
-                if (typeof bridge.ensureThemeLoaded === 'function') {
-                    void bridge.ensureThemeLoaded(themeName).catch(() => null);
-                }
                 applyBaibaokuThemeObject(theme, themeName);
                 state.currentThemeName = themeName;
             })
@@ -1013,7 +1047,11 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
 async function setBaibaokuSettingsAccelerationEnabled(enabled) {
     const next = Boolean(enabled);
     const previous = settings.baibaokuSettingsAccelerationEnabled !== false;
+    const previousLazy = settings.baibaokuLazyThemeLoadingEnabled !== false;
     settings.baibaokuSettingsAccelerationEnabled = next;
+    if (!next) {
+        settings.baibaokuLazyThemeLoadingEnabled = false;
+    }
 
     const bridge = getBaibaokuEarlyBridge();
     if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
@@ -1021,23 +1059,118 @@ async function setBaibaokuSettingsAccelerationEnabled(enabled) {
     } else if (bridge) {
         bridge.settingsAccelerationEnabled = next;
     }
+    if (!next) {
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(false);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = false;
+            if (typeof bridge.clearSettingsGetCache === 'function') {
+                bridge.clearSettingsGetCache('settings-acceleration-disabled');
+            }
+        }
+    }
 
     try {
-        const saved = await saveBaibaokuFastConfig({ settingsAccelerationEnabled: next });
+        const saved = await saveBaibaokuFastConfig({
+            settingsAccelerationEnabled: next,
+            ...(!next ? { lazyThemeLoadingEnabled: false } : {}),
+        });
         const savedEnabled = saved.settingsAccelerationEnabled !== false;
+        const savedLazyEnabled = savedEnabled && saved.lazyThemeLoadingEnabled !== false;
         settings.baibaokuSettingsAccelerationEnabled = savedEnabled;
+        settings.baibaokuLazyThemeLoadingEnabled = savedLazyEnabled;
         if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
             bridge.setSettingsAccelerationEnabled(savedEnabled);
         } else if (bridge) {
             bridge.settingsAccelerationEnabled = savedEnabled;
         }
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(savedLazyEnabled);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = savedLazyEnabled;
+            if (!savedLazyEnabled && typeof bridge.clearSettingsGetCache === 'function') {
+                bridge.clearSettingsGetCache('lazy-theme-loading-disabled');
+            }
+        }
         return saved;
     } catch (error) {
         settings.baibaokuSettingsAccelerationEnabled = previous;
+        settings.baibaokuLazyThemeLoadingEnabled = previousLazy;
         if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
             bridge.setSettingsAccelerationEnabled(previous);
         } else if (bridge) {
             bridge.settingsAccelerationEnabled = previous;
+        }
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(previousLazy);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = previousLazy;
+        }
+        throw error;
+    }
+}
+
+async function setBaibaokuLazyThemeLoadingEnabled(enabled) {
+    const next = Boolean(enabled);
+    const previousLazy = settings.baibaokuLazyThemeLoadingEnabled !== false;
+    const previousSettings = settings.baibaokuSettingsAccelerationEnabled !== false;
+    settings.baibaokuLazyThemeLoadingEnabled = next;
+    if (next) {
+        settings.baibaokuSettingsAccelerationEnabled = true;
+    }
+
+    const bridge = getBaibaokuEarlyBridge();
+    if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+        bridge.setLazyThemeLoadingEnabled(next);
+    } else if (bridge) {
+        bridge.lazyThemeLoadingEnabled = next;
+        if (!next && typeof bridge.clearSettingsGetCache === 'function') {
+            bridge.clearSettingsGetCache('lazy-theme-loading-disabled');
+        }
+    }
+    if (next) {
+        if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+            bridge.setSettingsAccelerationEnabled(true);
+        } else if (bridge) {
+            bridge.settingsAccelerationEnabled = true;
+        }
+    }
+
+    try {
+        const saved = await saveBaibaokuFastConfig({
+            lazyThemeLoadingEnabled: next,
+            ...(next ? { settingsAccelerationEnabled: true } : {}),
+        });
+        const savedSettingsEnabled = saved.settingsAccelerationEnabled !== false;
+        const savedLazyEnabled = savedSettingsEnabled && saved.lazyThemeLoadingEnabled !== false;
+        settings.baibaokuLazyThemeLoadingEnabled = savedLazyEnabled;
+        settings.baibaokuSettingsAccelerationEnabled = savedSettingsEnabled;
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(savedLazyEnabled);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = savedLazyEnabled;
+            if (!savedLazyEnabled && typeof bridge.clearSettingsGetCache === 'function') {
+                bridge.clearSettingsGetCache('lazy-theme-loading-disabled');
+            }
+        }
+        if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+            bridge.setSettingsAccelerationEnabled(savedSettingsEnabled);
+        } else if (bridge) {
+            bridge.settingsAccelerationEnabled = savedSettingsEnabled;
+        }
+        return saved;
+    } catch (error) {
+        settings.baibaokuLazyThemeLoadingEnabled = previousLazy;
+        settings.baibaokuSettingsAccelerationEnabled = previousSettings;
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(previousLazy);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = previousLazy;
+        }
+        if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+            bridge.setSettingsAccelerationEnabled(previousSettings);
+        } else if (bridge) {
+            bridge.settingsAccelerationEnabled = previousSettings;
         }
         throw error;
     }
@@ -1205,12 +1338,14 @@ function normalizeMessageEditClickSettings() {
 function saveExtensionSettings() {
     const persistedSettings = { ...settings };
     delete persistedSettings.baibaokuSettingsAccelerationEnabled;
+    delete persistedSettings.baibaokuLazyThemeLoadingEnabled;
     delete persistedSettings.fastCharacterListEnabled;
     delete persistedSettings.recentChatListAccelerationEnabled;
     delete persistedSettings.progressiveChatLoadingEnabled;
     delete persistedSettings.extensionManifestBundleEnabled;
     Object.assign(extension_settings[SETTINGS_KEY], persistedSettings);
     delete extension_settings[SETTINGS_KEY].baibaokuSettingsAccelerationEnabled;
+    delete extension_settings[SETTINGS_KEY].baibaokuLazyThemeLoadingEnabled;
     delete extension_settings[SETTINGS_KEY].fastCharacterListEnabled;
     delete extension_settings[SETTINGS_KEY].recentChatListAccelerationEnabled;
     delete extension_settings[SETTINGS_KEY].progressiveChatLoadingEnabled;
@@ -2765,6 +2900,22 @@ async function renderSettingsPanel() {
             }
         });
 
+    $('#bai_bai_toolkit_baibaoku_lazy_theme_loading_enabled')
+        .prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false && settings.baibaokuLazyThemeLoadingEnabled !== false)
+        .on('input', async function () {
+            const checkbox = $(this);
+            checkbox.prop('disabled', true);
+            try {
+                await setBaibaokuLazyThemeLoadingEnabled(Boolean(checkbox.prop('checked')));
+            } catch (error) {
+                console.debug(`${LOG_PREFIX} Failed to save BaiBaoKu lazy theme loading config`, error);
+                checkbox.prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false && settings.baibaokuLazyThemeLoadingEnabled !== false);
+            } finally {
+                checkbox.prop('disabled', false);
+                applyBaibaokuPanelLocalState(container);
+            }
+        });
+
     $('#bai_bai_toolkit_extension_manifest_bundle_enabled')
         .prop('checked', settings.extensionManifestBundleEnabled)
         .on('input', async function () {
@@ -2958,6 +3109,8 @@ function applyBaibaokuPanelLocalState(container) {
 
     container.find('#bai_bai_toolkit_baibaoku_settings_acceleration_enabled')
         .prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false);
+    container.find('#bai_bai_toolkit_baibaoku_lazy_theme_loading_enabled')
+        .prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false && settings.baibaokuLazyThemeLoadingEnabled !== false);
     container.find('#bai_bai_toolkit_extension_manifest_bundle_enabled')
         .prop('checked', settings.extensionManifestBundleEnabled !== false);
     container.find('#bai_bai_toolkit_fast_character_list_enabled')
@@ -3056,6 +3209,7 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
     const driverStatus = container.find('#bai_bai_toolkit_baibaoku_driver_status');
     const bridgeStatus = container.find('#bai_bai_toolkit_baibaoku_bridge_status');
     const accelerationToggle = container.find('#bai_bai_toolkit_baibaoku_settings_acceleration_enabled');
+    const lazyThemeLoadingToggle = container.find('#bai_bai_toolkit_baibaoku_lazy_theme_loading_enabled');
     const extensionManifestBundleToggle = container.find('#bai_bai_toolkit_extension_manifest_bundle_enabled');
     const characterListToggle = container.find('#bai_bai_toolkit_fast_character_list_enabled');
     const recentChatListToggle = container.find('#bai_bai_toolkit_recent_chat_list_acceleration_enabled');
@@ -3073,6 +3227,15 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
     if (typeof bridgeEnabled === 'boolean') {
         settings.baibaokuSettingsAccelerationEnabled = bridgeEnabled;
         accelerationToggle.prop('checked', bridgeEnabled);
+    }
+
+    const bridgeLazyThemeLoadingEnabled = typeof bridge?.isLazyThemeLoadingEnabled === 'function'
+        ? bridge.isLazyThemeLoadingEnabled()
+        : null;
+    if (typeof bridgeLazyThemeLoadingEnabled === 'boolean') {
+        const activeLazyThemeLoadingEnabled = settings.baibaokuSettingsAccelerationEnabled !== false && bridgeLazyThemeLoadingEnabled;
+        settings.baibaokuLazyThemeLoadingEnabled = activeLazyThemeLoadingEnabled;
+        lazyThemeLoadingToggle.prop('checked', activeLazyThemeLoadingEnabled);
     }
 
     const bridgeExtensionManifestBundleEnabled = typeof bridge?.isExtensionManifestBundleEnabled === 'function'
@@ -3131,6 +3294,7 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
         try {
             const config = await fetchBaibaokuFastConfig();
             const settingsEnabled = config.settingsAccelerationEnabled !== false;
+            const lazyThemeLoadingEnabled = settingsEnabled && config.lazyThemeLoadingEnabled !== false;
             const extensionManifestBundleEnabled = config.extensionManifestBundleEnabled !== false;
             const characterListEnabled = config.characterListAccelerationEnabled !== false;
             const recentChatListEnabled = config.recentChatListAccelerationEnabled !== false;
@@ -3143,12 +3307,14 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
                 updatedAt: Date.now(),
             };
             settings.baibaokuSettingsAccelerationEnabled = settingsEnabled;
+            settings.baibaokuLazyThemeLoadingEnabled = lazyThemeLoadingEnabled;
             settings.extensionManifestBundleEnabled = extensionManifestBundleEnabled;
             settings.fastCharacterListEnabled = characterListEnabled;
             settings.recentChatListAccelerationEnabled = recentChatListEnabled;
             settings.progressiveChatLoadingEnabled = progressiveChatLoadingEnabled;
             settings.tokenizerBulkCountEnabled = tokenizerBulkCountEnabled;
             accelerationToggle.prop('checked', settingsEnabled);
+            lazyThemeLoadingToggle.prop('checked', lazyThemeLoadingEnabled);
             extensionManifestBundleToggle.prop('checked', extensionManifestBundleEnabled);
             characterListToggle.prop('checked', characterListEnabled);
             recentChatListToggle.prop('checked', recentChatListEnabled);
@@ -3159,6 +3325,14 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
                 bridge.setSettingsAccelerationEnabled(settingsEnabled);
             } else if (bridge) {
                 bridge.settingsAccelerationEnabled = settingsEnabled;
+            }
+            if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+                bridge.setLazyThemeLoadingEnabled(lazyThemeLoadingEnabled);
+            } else if (bridge) {
+                bridge.lazyThemeLoadingEnabled = lazyThemeLoadingEnabled;
+                if (!lazyThemeLoadingEnabled && typeof bridge.clearSettingsGetCache === 'function') {
+                    bridge.clearSettingsGetCache('lazy-theme-loading-disabled');
+                }
             }
             if (typeof bridge?.setCharacterListAccelerationEnabled === 'function') {
                 bridge.setCharacterListAccelerationEnabled(characterListEnabled);
