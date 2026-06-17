@@ -1,4 +1,5 @@
 import {
+    chat_metadata,
     characters,
     event_types,
     eventSource,
@@ -20,9 +21,9 @@ import { getPresetManager } from '../../../preset-manager.js';
 import { applyPowerUserSettings, power_user } from '../../../power-user.js';
 import { sendMessageAs } from '../../../slash-commands.js';
 import { isAdmin } from '../../../user.js';
-import { debounce, download, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4 } from '../../../utils.js';
+import { debounce, download, getCharaFilename, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4 } from '../../../utils.js';
 import { getCurrentPresetAPI as getRegexCurrentPresetAPI, getCurrentPresetName as getRegexCurrentPresetName, getScriptsByType as getRegexScriptsByType, runRegexScript, SCRIPT_TYPES as REGEX_SCRIPT_TYPES, substitute_find_regex } from '../../regex/engine.js';
-const CURRENT_VERSION = '0.26.6';
+const CURRENT_VERSION = '0.27.0';
 const LOCAL_ASSET_VERSION = getLocalAssetVersion(CURRENT_VERSION);
 const { SaveGenerateDisplay } = await importVersionedLocalModule('./saveGenerateDisplay.js');
 const chatOptimizations = await importVersionedLocalModule('./chatOptimizations.js');
@@ -49,11 +50,13 @@ const BAIBAOKU_THEME_LOADING_HOST_CLASS = 'bai-bai-toolkit-theme-loading-host';
 const BAIBAOKU_THEME_LOADING_OVERLAY_CLASS = 'bai-bai-toolkit-theme-loading-overlay';
 const BAIBAOKU_THEME_LOADING_FIXED_CLASS = 'bai-bai-toolkit-theme-loading-overlay-fixed';
 const BAIBAOKU_THEME_LOADING_SPINNER_CLASS = 'bai-bai-toolkit-theme-loading-spinner';
+const baibaokuThemePageCache = new Map();
 const THEME_MANAGER_PANEL_SELECTOR = '#theme-manager-panel';
 const THEME_MANAGER_BACKGROUND_BINDINGS_KEY = 'themeManager_backgroundBindings';
 const THEME_MANAGER_THEME_ITEM_SELECTOR = `${THEME_MANAGER_PANEL_SELECTOR} .theme-item[data-value]`;
 const THEME_MANAGER_BACKGROUND_SELECTOR = '#bg_menu_content .bg_example, #bg_custom_content .bg_example';
 const BAIBAOKU_SAVE_GENERATE_URL = '/api/plugins/baibaoku/v1/chats/save-generate';
+const BAIBAOKU_SAVE_GENERATE_DISCARD_URL = `${BAIBAOKU_SAVE_GENERATE_URL}/discard`;
 const BAIBAOKU_STATUS_TIMEOUT_MS = 3000;
 const BAIBAOKU_PANEL_STATUS_CACHE_MS = 5 * 60_000;
 const SAVE_GENERATE_FETCH_KEY = '__baiBaiToolkitSaveGenerateFetchPatched';
@@ -205,9 +208,6 @@ const DESCRIPTION_CODEMIRROR_CDN_MODULES = {
     oneDark: 'https://esm.sh/@codemirror/theme-one-dark@6?bundle',
 };
 
-const WORLD_INFO_DRAWER_HANDLER_KEY = '__baiBaiToolkitWorldInfoDrawerHandler';
-const WORLD_INFO_LAZY_SELECT2_PATCH_KEY = '__baiBaiToolkitWorldInfoLazySelect2Patched';
-const WORLD_INFO_CHARACTER_FILTER_APPEND_PATCH_KEY = '__baiBaiToolkitWorldInfoCharacterFilterAppendPatched';
 const CHARACTER_SEARCH_OPTIMIZATION_KEY = 'baiBaiToolkitCharacterSearchOptimization';
 const REGEX_CONTAINER_SELECTOR = '#regex_container';
 const REGEX_EXTENSIONS_PANEL_SELECTOR = '#rm_extensions_block';
@@ -215,11 +215,6 @@ const REGEX_SCRIPT_ROW_SELECTOR = '.regex-script-label';
 const REGEX_SCRIPT_LIST_SELECTOR = '#saved_regex_scripts, #saved_scoped_scripts, #saved_preset_scripts';
 const REGEX_CHAT_RELOAD_VISIBILITY_CHECK_DELAY_MS = 120;
 const REGEX_CHAT_RELOAD_VISIBILITY_FALLBACK_DELAY_MS = 1000;
-const WORLD_INFO_ENTRY_DRAWER_TOGGLE_SELECTOR = '#world_popup_entries_list > .world_entry > .world_entry_form > .inline-drawer > .inline-drawer-header .inline-drawer-toggle';
-const WORLD_INFO_ENTRY_DRAWER_SELECTOR = '#world_popup_entries_list > .world_entry > .world_entry_form > .inline-drawer';
-const WORLD_INFO_LAZY_SELECT2_SELECTOR = '#world_popup_entries_list .world_entry_edit select[name="characterFilter"], #world_popup_entries_list .world_entry_edit select[name="triggers"]';
-const WORLD_INFO_LAZY_SELECT2_DATASET_KEY = 'baiBaiToolkitLazySelect2';
-const WORLD_INFO_DEFERRED_OPTIONS_DATASET_KEY = 'baiBaiToolkitDeferredOptions';
 const CHARACTER_LIST_SELECTOR = '#rm_print_characters_block';
 const CHARACTER_LIST_AVATAR_SELECTOR = `${CHARACTER_LIST_SELECTOR} .character_select .avatar img`;
 const PERSONA_LIST_SELECTOR = '#user_avatar_block';
@@ -335,13 +330,15 @@ const PERFORMANCE_TRACE_INTERACTION_SELECTOR = [
 const defaultSettings = {
     updatePromptOnAvailableEnabled: true,
     resizeGuardEnabled: true,
-    descriptionCodeMirrorEditorEnabled: true,
+    descriptionCodeMirrorEditorEnabled: false,
     customCssInputOptimizationEnabled: true,
     customCssShadowPropertyEnabled: true,
     worldInfoDrawerOptimizationEnabled: true,
-    worldInfoPageOptimizationEnabled: false,
+    worldInfoPageOptimizationEnabled: true,
+    worldInfoListOptimizationEnabled: true,
     characterSearchInputOptimizationEnabled: true,
     baibaokuSettingsAccelerationEnabled: true,
+    baibaokuLazyThemeLoadingEnabled: true,
     fastCharacterListEnabled: true,
     recentChatListAccelerationEnabled: true,
     progressiveChatLoadingEnabled: false,
@@ -362,11 +359,12 @@ const defaultSettings = {
     mobileMessageEditScrollGuardEnabled: true,
     presetScrollOptimizationEnabled: true,
     presetDragOptimizationEnabled: true,
+    presetVueDragLocked: false,
     presetMobileWholeRowDragEnabled: false,
     presetSwitchOptimizationEnabled: true,
     presetToggleOptimizationEnabled: true,
     presetGroupingEnabled: true,
-    presetPromptCodeMirrorEditorEnabled: true,
+    presetPromptCodeMirrorEditorEnabled: false,
     presetAutoSaveAfterPromptEditEnabled: false,
     regexQuickOperationOptimizationEnabled: true,
     regexListGroups: {},
@@ -587,6 +585,36 @@ async function fetchBaibaokuThemeByName(name) {
     }
 
     return theme;
+}
+
+async function loadBaibaokuThemeByName(name) {
+    const cacheKey = String(name || '').trim();
+    if (cacheKey && baibaokuThemePageCache.has(cacheKey)) {
+        return baibaokuThemePageCache.get(cacheKey);
+    }
+
+    const theme = await fetchBaibaokuThemeByName(name);
+    if (cacheKey) {
+        baibaokuThemePageCache.set(cacheKey, theme);
+    }
+    return theme;
+}
+
+function cacheBaibaokuCurrentThemeSnapshot(name) {
+    const cacheKey = String(name || '').trim();
+    if (!cacheKey || baibaokuThemePageCache.has(cacheKey)) {
+        return false;
+    }
+
+    const theme = { name: cacheKey };
+    for (const key of BAIBAOKU_THEME_POWER_USER_KEYS) {
+        if (power_user[key] !== undefined) {
+            theme[key] = power_user[key];
+        }
+    }
+
+    baibaokuThemePageCache.set(cacheKey, theme);
+    return true;
 }
 
 function applyBaibaokuThemeColorBindings() {
@@ -913,6 +941,8 @@ function applyBaibaokuThemeObject(theme, fallbackName) {
         throw new Error('Theme name is missing');
     }
 
+    baibaokuThemePageCache.set(themeName, { ...theme, name: themeName });
+
     const oldChatDisplay = power_user.chat_display;
     const oldToastrPosition = power_user.toastr_position;
     power_user.theme = themeName;
@@ -958,7 +988,7 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
             return;
         }
 
-        if (settings.baibaokuSettingsAccelerationEnabled === false) {
+        if (settings.baibaokuSettingsAccelerationEnabled === false || settings.baibaokuLazyThemeLoadingEnabled === false) {
             state.currentThemeName = themeName;
             return;
         }
@@ -973,14 +1003,14 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
         event.stopImmediatePropagation();
 
         const previousThemeName = state.currentThemeName || String(power_user?.theme || '');
+        if (previousThemeName && previousThemeName !== themeName) {
+            cacheBaibaokuCurrentThemeSnapshot(previousThemeName);
+        }
         const loadingToken = showBaibaokuThemeLoadingOverlay(state, target);
         setBaibaokuThemeSelectBusy(target, true);
 
-        state.pending = fetchBaibaokuThemeByName(themeName)
+        state.pending = loadBaibaokuThemeByName(themeName)
             .then((theme) => {
-                if (typeof bridge.ensureThemeLoaded === 'function') {
-                    void bridge.ensureThemeLoaded(themeName).catch(() => null);
-                }
                 applyBaibaokuThemeObject(theme, themeName);
                 state.currentThemeName = themeName;
             })
@@ -1012,7 +1042,11 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
 async function setBaibaokuSettingsAccelerationEnabled(enabled) {
     const next = Boolean(enabled);
     const previous = settings.baibaokuSettingsAccelerationEnabled !== false;
+    const previousLazy = settings.baibaokuLazyThemeLoadingEnabled !== false;
     settings.baibaokuSettingsAccelerationEnabled = next;
+    if (!next) {
+        settings.baibaokuLazyThemeLoadingEnabled = false;
+    }
 
     const bridge = getBaibaokuEarlyBridge();
     if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
@@ -1020,23 +1054,118 @@ async function setBaibaokuSettingsAccelerationEnabled(enabled) {
     } else if (bridge) {
         bridge.settingsAccelerationEnabled = next;
     }
+    if (!next) {
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(false);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = false;
+            if (typeof bridge.clearSettingsGetCache === 'function') {
+                bridge.clearSettingsGetCache('settings-acceleration-disabled');
+            }
+        }
+    }
 
     try {
-        const saved = await saveBaibaokuFastConfig({ settingsAccelerationEnabled: next });
+        const saved = await saveBaibaokuFastConfig({
+            settingsAccelerationEnabled: next,
+            ...(!next ? { lazyThemeLoadingEnabled: false } : {}),
+        });
         const savedEnabled = saved.settingsAccelerationEnabled !== false;
+        const savedLazyEnabled = savedEnabled && saved.lazyThemeLoadingEnabled !== false;
         settings.baibaokuSettingsAccelerationEnabled = savedEnabled;
+        settings.baibaokuLazyThemeLoadingEnabled = savedLazyEnabled;
         if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
             bridge.setSettingsAccelerationEnabled(savedEnabled);
         } else if (bridge) {
             bridge.settingsAccelerationEnabled = savedEnabled;
         }
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(savedLazyEnabled);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = savedLazyEnabled;
+            if (!savedLazyEnabled && typeof bridge.clearSettingsGetCache === 'function') {
+                bridge.clearSettingsGetCache('lazy-theme-loading-disabled');
+            }
+        }
         return saved;
     } catch (error) {
         settings.baibaokuSettingsAccelerationEnabled = previous;
+        settings.baibaokuLazyThemeLoadingEnabled = previousLazy;
         if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
             bridge.setSettingsAccelerationEnabled(previous);
         } else if (bridge) {
             bridge.settingsAccelerationEnabled = previous;
+        }
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(previousLazy);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = previousLazy;
+        }
+        throw error;
+    }
+}
+
+async function setBaibaokuLazyThemeLoadingEnabled(enabled) {
+    const next = Boolean(enabled);
+    const previousLazy = settings.baibaokuLazyThemeLoadingEnabled !== false;
+    const previousSettings = settings.baibaokuSettingsAccelerationEnabled !== false;
+    settings.baibaokuLazyThemeLoadingEnabled = next;
+    if (next) {
+        settings.baibaokuSettingsAccelerationEnabled = true;
+    }
+
+    const bridge = getBaibaokuEarlyBridge();
+    if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+        bridge.setLazyThemeLoadingEnabled(next);
+    } else if (bridge) {
+        bridge.lazyThemeLoadingEnabled = next;
+        if (!next && typeof bridge.clearSettingsGetCache === 'function') {
+            bridge.clearSettingsGetCache('lazy-theme-loading-disabled');
+        }
+    }
+    if (next) {
+        if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+            bridge.setSettingsAccelerationEnabled(true);
+        } else if (bridge) {
+            bridge.settingsAccelerationEnabled = true;
+        }
+    }
+
+    try {
+        const saved = await saveBaibaokuFastConfig({
+            lazyThemeLoadingEnabled: next,
+            ...(next ? { settingsAccelerationEnabled: true } : {}),
+        });
+        const savedSettingsEnabled = saved.settingsAccelerationEnabled !== false;
+        const savedLazyEnabled = savedSettingsEnabled && saved.lazyThemeLoadingEnabled !== false;
+        settings.baibaokuLazyThemeLoadingEnabled = savedLazyEnabled;
+        settings.baibaokuSettingsAccelerationEnabled = savedSettingsEnabled;
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(savedLazyEnabled);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = savedLazyEnabled;
+            if (!savedLazyEnabled && typeof bridge.clearSettingsGetCache === 'function') {
+                bridge.clearSettingsGetCache('lazy-theme-loading-disabled');
+            }
+        }
+        if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+            bridge.setSettingsAccelerationEnabled(savedSettingsEnabled);
+        } else if (bridge) {
+            bridge.settingsAccelerationEnabled = savedSettingsEnabled;
+        }
+        return saved;
+    } catch (error) {
+        settings.baibaokuLazyThemeLoadingEnabled = previousLazy;
+        settings.baibaokuSettingsAccelerationEnabled = previousSettings;
+        if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+            bridge.setLazyThemeLoadingEnabled(previousLazy);
+        } else if (bridge) {
+            bridge.lazyThemeLoadingEnabled = previousLazy;
+        }
+        if (typeof bridge?.setSettingsAccelerationEnabled === 'function') {
+            bridge.setSettingsAccelerationEnabled(previousSettings);
+        } else if (bridge) {
+            bridge.settingsAccelerationEnabled = previousSettings;
         }
         throw error;
     }
@@ -1204,12 +1333,14 @@ function normalizeMessageEditClickSettings() {
 function saveExtensionSettings() {
     const persistedSettings = { ...settings };
     delete persistedSettings.baibaokuSettingsAccelerationEnabled;
+    delete persistedSettings.baibaokuLazyThemeLoadingEnabled;
     delete persistedSettings.fastCharacterListEnabled;
     delete persistedSettings.recentChatListAccelerationEnabled;
     delete persistedSettings.progressiveChatLoadingEnabled;
     delete persistedSettings.extensionManifestBundleEnabled;
     Object.assign(extension_settings[SETTINGS_KEY], persistedSettings);
     delete extension_settings[SETTINGS_KEY].baibaokuSettingsAccelerationEnabled;
+    delete extension_settings[SETTINGS_KEY].baibaokuLazyThemeLoadingEnabled;
     delete extension_settings[SETTINGS_KEY].fastCharacterListEnabled;
     delete extension_settings[SETTINGS_KEY].recentChatListAccelerationEnabled;
     delete extension_settings[SETTINGS_KEY].progressiveChatLoadingEnabled;
@@ -2726,19 +2857,31 @@ async function renderSettingsPanel() {
         });
 
     $('#bai_bai_toolkit_world_info_drawer_optimization_enabled')
-        .prop('checked', settings.worldInfoDrawerOptimizationEnabled)
+        .prop('checked', settings.worldInfoDrawerOptimizationEnabled || settings.worldInfoPageOptimizationEnabled)
         .on('input', function () {
-            settings.worldInfoDrawerOptimizationEnabled = Boolean($(this).prop('checked'));
-            if (!settings.worldInfoDrawerOptimizationEnabled) {
-                initializeDeferredWorldInfoSelect2(document);
+            const enabled = Boolean($(this).prop('checked'));
+            settings.worldInfoDrawerOptimizationEnabled = enabled;
+            settings.worldInfoPageOptimizationEnabled = enabled;
+            if (!enabled) {
+                worldInfoPageOptimization.initializeDeferredWorldInfoSelect2(document);
             }
             saveExtensionSettings();
-            applyWorldInfoDrawerOptimization();
-            applyWorldInfoLazySelect2Optimization();
-            applyWorldInfoCharacterFilterOptionsOptimization();
+            worldInfoPageOptimization.applyWorldInfoDrawerOptimization();
+            worldInfoPageOptimization.applyWorldInfoLazySelect2Optimization();
+            worldInfoPageOptimization.applyWorldInfoCharacterFilterOptionsOptimization();
+            worldInfoPageOptimization.applyWorldInfoPageOptimization();
         });
 
     worldInfoPageOptimization.bindWorldInfoPageOptimizationSettings({ saveSettings: saveExtensionSettings });
+
+    $('#bai_bai_toolkit_world_info_list_optimization_enabled')
+        .prop('checked', settings.worldInfoListOptimizationEnabled)
+        .on('input', function () {
+            settings.worldInfoListOptimizationEnabled = Boolean($(this).prop('checked'));
+            saveExtensionSettings();
+            worldInfoPageOptimization.applyWorldInfoListOptimization();
+            worldInfoPageOptimization.refreshWorldInfoEditorIfOpen();
+        });
 
     $('#bai_bai_toolkit_character_search_input_optimization_enabled')
         .prop('checked', settings.characterSearchInputOptimizationEnabled)
@@ -2758,6 +2901,22 @@ async function renderSettingsPanel() {
             } catch (error) {
                 console.debug(`${LOG_PREFIX} Failed to save BaiBaoKu settings acceleration config`, error);
                 checkbox.prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false);
+            } finally {
+                checkbox.prop('disabled', false);
+                applyBaibaokuPanelLocalState(container);
+            }
+        });
+
+    $('#bai_bai_toolkit_baibaoku_lazy_theme_loading_enabled')
+        .prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false && settings.baibaokuLazyThemeLoadingEnabled !== false)
+        .on('input', async function () {
+            const checkbox = $(this);
+            checkbox.prop('disabled', true);
+            try {
+                await setBaibaokuLazyThemeLoadingEnabled(Boolean(checkbox.prop('checked')));
+            } catch (error) {
+                console.debug(`${LOG_PREFIX} Failed to save BaiBaoKu lazy theme loading config`, error);
+                checkbox.prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false && settings.baibaokuLazyThemeLoadingEnabled !== false);
             } finally {
                 checkbox.prop('disabled', false);
                 applyBaibaokuPanelLocalState(container);
@@ -2957,6 +3116,8 @@ function applyBaibaokuPanelLocalState(container) {
 
     container.find('#bai_bai_toolkit_baibaoku_settings_acceleration_enabled')
         .prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false);
+    container.find('#bai_bai_toolkit_baibaoku_lazy_theme_loading_enabled')
+        .prop('checked', settings.baibaokuSettingsAccelerationEnabled !== false && settings.baibaokuLazyThemeLoadingEnabled !== false);
     container.find('#bai_bai_toolkit_extension_manifest_bundle_enabled')
         .prop('checked', settings.extensionManifestBundleEnabled !== false);
     container.find('#bai_bai_toolkit_fast_character_list_enabled')
@@ -3055,6 +3216,7 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
     const driverStatus = container.find('#bai_bai_toolkit_baibaoku_driver_status');
     const bridgeStatus = container.find('#bai_bai_toolkit_baibaoku_bridge_status');
     const accelerationToggle = container.find('#bai_bai_toolkit_baibaoku_settings_acceleration_enabled');
+    const lazyThemeLoadingToggle = container.find('#bai_bai_toolkit_baibaoku_lazy_theme_loading_enabled');
     const extensionManifestBundleToggle = container.find('#bai_bai_toolkit_extension_manifest_bundle_enabled');
     const characterListToggle = container.find('#bai_bai_toolkit_fast_character_list_enabled');
     const recentChatListToggle = container.find('#bai_bai_toolkit_recent_chat_list_acceleration_enabled');
@@ -3072,6 +3234,15 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
     if (typeof bridgeEnabled === 'boolean') {
         settings.baibaokuSettingsAccelerationEnabled = bridgeEnabled;
         accelerationToggle.prop('checked', bridgeEnabled);
+    }
+
+    const bridgeLazyThemeLoadingEnabled = typeof bridge?.isLazyThemeLoadingEnabled === 'function'
+        ? bridge.isLazyThemeLoadingEnabled()
+        : null;
+    if (typeof bridgeLazyThemeLoadingEnabled === 'boolean') {
+        const activeLazyThemeLoadingEnabled = settings.baibaokuSettingsAccelerationEnabled !== false && bridgeLazyThemeLoadingEnabled;
+        settings.baibaokuLazyThemeLoadingEnabled = activeLazyThemeLoadingEnabled;
+        lazyThemeLoadingToggle.prop('checked', activeLazyThemeLoadingEnabled);
     }
 
     const bridgeExtensionManifestBundleEnabled = typeof bridge?.isExtensionManifestBundleEnabled === 'function'
@@ -3130,6 +3301,7 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
         try {
             const config = await fetchBaibaokuFastConfig();
             const settingsEnabled = config.settingsAccelerationEnabled !== false;
+            const lazyThemeLoadingEnabled = settingsEnabled && config.lazyThemeLoadingEnabled !== false;
             const extensionManifestBundleEnabled = config.extensionManifestBundleEnabled !== false;
             const characterListEnabled = config.characterListAccelerationEnabled !== false;
             const recentChatListEnabled = config.recentChatListAccelerationEnabled !== false;
@@ -3142,12 +3314,14 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
                 updatedAt: Date.now(),
             };
             settings.baibaokuSettingsAccelerationEnabled = settingsEnabled;
+            settings.baibaokuLazyThemeLoadingEnabled = lazyThemeLoadingEnabled;
             settings.extensionManifestBundleEnabled = extensionManifestBundleEnabled;
             settings.fastCharacterListEnabled = characterListEnabled;
             settings.recentChatListAccelerationEnabled = recentChatListEnabled;
             settings.progressiveChatLoadingEnabled = progressiveChatLoadingEnabled;
             settings.tokenizerBulkCountEnabled = tokenizerBulkCountEnabled;
             accelerationToggle.prop('checked', settingsEnabled);
+            lazyThemeLoadingToggle.prop('checked', lazyThemeLoadingEnabled);
             extensionManifestBundleToggle.prop('checked', extensionManifestBundleEnabled);
             characterListToggle.prop('checked', characterListEnabled);
             recentChatListToggle.prop('checked', recentChatListEnabled);
@@ -3158,6 +3332,14 @@ async function refreshBaibaokuPanelStatus(container, { force = false } = {}) {
                 bridge.setSettingsAccelerationEnabled(settingsEnabled);
             } else if (bridge) {
                 bridge.settingsAccelerationEnabled = settingsEnabled;
+            }
+            if (typeof bridge?.setLazyThemeLoadingEnabled === 'function') {
+                bridge.setLazyThemeLoadingEnabled(lazyThemeLoadingEnabled);
+            } else if (bridge) {
+                bridge.lazyThemeLoadingEnabled = lazyThemeLoadingEnabled;
+                if (!lazyThemeLoadingEnabled && typeof bridge.clearSettingsGetCache === 'function') {
+                    bridge.clearSettingsGetCache('lazy-theme-loading-disabled');
+                }
             }
             if (typeof bridge?.setCharacterListAccelerationEnabled === 'function') {
                 bridge.setCharacterListAccelerationEnabled(characterListEnabled);
@@ -3378,10 +3560,11 @@ function applyFeatureSettings() {
     }
 
     chatOptimizations.applyFastChatListScrollOptimization();
-    applyWorldInfoDrawerOptimization();
-    applyWorldInfoLazySelect2Optimization();
-    applyWorldInfoCharacterFilterOptionsOptimization();
+    worldInfoPageOptimization.applyWorldInfoDrawerOptimization();
+    worldInfoPageOptimization.applyWorldInfoLazySelect2Optimization();
+    worldInfoPageOptimization.applyWorldInfoCharacterFilterOptionsOptimization();
     worldInfoPageOptimization.applyWorldInfoPageOptimization();
+    worldInfoPageOptimization.applyWorldInfoListOptimization();
     applyCharacterSearchInputOptimization();
     applyCharacterListAvatarLazyLoadOptimization();
     applyFastChatGetOptimization();
@@ -3881,19 +4064,9 @@ function attachCustomCssCodeMirrorEditor(state, source) {
         }, 0);
     };
 
-    const stopPropagationHandler = (event) => {
-        event.stopPropagation();
-    };
-
-    wrapper.addEventListener('mousedown', stopPropagationHandler);
-    wrapper.addEventListener('pointerdown', stopPropagationHandler);
-    wrapper.addEventListener('click', stopPropagationHandler);
     wrapper.addEventListener('focusout', focusOutHandler);
 
     state.listeners.push(
-        { target: wrapper, type: 'mousedown', handler: stopPropagationHandler, options: undefined },
-        { target: wrapper, type: 'pointerdown', handler: stopPropagationHandler, options: undefined },
-        { target: wrapper, type: 'click', handler: stopPropagationHandler, options: undefined },
         { target: wrapper, type: 'focusout', handler: focusOutHandler, options: undefined }
     );
 
@@ -4074,51 +4247,6 @@ function createCustomCssCodeMirrorView(state, source, wrapper, modules) {
                 state.dirty = true;
                 syncCustomCssCodeMirrorToSource(state);
             }
-        }),
-        EditorView.domEventHandlers({
-            beforeinput(event) {
-                event.stopPropagation();
-                return false;
-            },
-            input(event) {
-                event.stopPropagation();
-                return false;
-            },
-            compositionstart(event) {
-                event.stopPropagation();
-                return false;
-            },
-            compositionupdate(event) {
-                event.stopPropagation();
-                return false;
-            },
-            compositionend(event) {
-                event.stopPropagation();
-                return false;
-            },
-            keydown(event) {
-                event.stopPropagation();
-                return false;
-            },
-            keyup(event) {
-                event.stopPropagation();
-                return false;
-            },
-            click(event) {
-                event.stopPropagation();
-                return false;
-            },
-            mousedown(event) {
-                event.stopPropagation();
-                return false;
-            },
-            pointerdown(event) {
-                event.stopPropagation();
-                return false;
-            },
-            scroll() {
-                return false;
-            },
         }),
         EditorView.theme({
             '&': {
@@ -5509,6 +5637,9 @@ function buildRegexVueListModel(scriptType) {
     const scripts = getRegexScriptsByType(scriptType);
     const groupState = getRegexGroupStateForScriptType(scriptType);
     normalizeRegexGroupState(groupState);
+    if (syncRegexGroupScriptOrderMetaFromScriptArray(groupState, scripts)) {
+        saveRegexGroupSettings();
+    }
 
     const groupsById = new Map();
     const realGroups = groupState.groups
@@ -7138,6 +7269,54 @@ function normalizeRegexGroupState(groupState) {
     };
 }
 
+function getNormalizedRegexGroupId(groupId, validGroupIds) {
+    if (groupId === REGEX_PENDING_ASSIGNMENT_GROUP_ID) {
+        return REGEX_PENDING_ASSIGNMENT_GROUP_ID;
+    }
+
+    if (groupId === REGEX_UNGROUPED_GROUP_ID || !validGroupIds.has(groupId)) {
+        return REGEX_UNGROUPED_GROUP_ID;
+    }
+
+    return groupId;
+}
+
+function syncRegexGroupScriptOrderMetaFromScriptArray(groupState, scripts) {
+    if (!groupState?.scripts || typeof groupState.scripts !== 'object' || !Array.isArray(scripts)) {
+        return false;
+    }
+
+    const validGroupIds = new Set((groupState.groups ?? []).map(group => group.id));
+    const nextOrderByGroupId = new Map();
+    let changed = false;
+
+    for (const script of scripts) {
+        const scriptId = script?.id;
+
+        if (!scriptId) {
+            continue;
+        }
+
+        const meta = groupState.scripts[scriptId];
+        const groupId = getNormalizedRegexGroupId(meta?.groupId, validGroupIds);
+        const nextOrder = nextOrderByGroupId.get(groupId) ?? 0;
+
+        nextOrderByGroupId.set(groupId, nextOrder + 1);
+
+        if (!meta || typeof meta !== 'object') {
+            continue;
+        }
+
+        if (meta.groupId !== groupId || Number(meta.order) !== nextOrder) {
+            meta.groupId = groupId;
+            meta.order = nextOrder;
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
 function saveRegexGroupSettings() {
     extension_settings[SETTINGS_KEY].regexListGroups = settings.regexListGroups;
     markRegexGroupSettingsSavePending();
@@ -7798,6 +7977,7 @@ async function bulkMoveRegexVueSelectedScriptsToGroup(scriptType, targetGroupId)
         };
         nextOrder += 1;
     }
+    sortRegexScriptsByGroupMeta(scripts, groupState);
 
     try {
         saveRegexGroupSettings();
@@ -7817,6 +7997,51 @@ async function bulkMoveRegexVueSelectedScriptsToGroup(scriptType, targetGroupId)
         toastr.error(t`Failed to move regex script. See console for details.`);
         syncRegexVueManagerState();
     }
+}
+
+function sortRegexScriptsByGroupMeta(scripts, groupState) {
+    if (!Array.isArray(scripts) || !groupState) {
+        return false;
+    }
+
+    normalizeRegexGroupState(groupState);
+
+    const validGroupIds = new Set((groupState.groups ?? []).map(group => group.id));
+    const groupOrder = [
+        REGEX_PENDING_ASSIGNMENT_GROUP_ID,
+        ...(groupState.groups ?? []).map(group => group.id),
+        REGEX_UNGROUPED_GROUP_ID,
+    ];
+    const buckets = new Map(groupOrder.map(groupId => [groupId, []]));
+
+    for (let index = 0; index < scripts.length; index++) {
+        const script = scripts[index];
+        const meta = script?.id ? groupState.scripts?.[script.id] : null;
+        const groupId = getNormalizedRegexGroupId(meta?.groupId, validGroupIds);
+        const order = Number.isFinite(Number(meta?.order)) ? Number(meta.order) : index;
+
+        if (!buckets.has(groupId)) {
+            buckets.set(groupId, []);
+        }
+
+        buckets.get(groupId).push({ script, order, index });
+    }
+
+    const sortedScripts = [];
+
+    for (const groupId of groupOrder) {
+        const bucket = buckets.get(groupId) ?? [];
+        bucket
+            .sort((left, right) => left.order - right.order || left.index - right.index)
+            .forEach(item => sortedScripts.push(item.script));
+    }
+
+    if (sortedScripts.length !== scripts.length) {
+        return false;
+    }
+
+    scripts.splice(0, scripts.length, ...sortedScripts);
+    return true;
 }
 
 function canMoveRegexScriptsToType(toType) {
@@ -8061,20 +8286,28 @@ async function openOptimizedRegexEditorWithScript(scriptType, script) {
 
     const scripts = getRegexScriptsByType(scriptType);
     const existingIndex = scripts.findIndex(item => item?.id === updatedScript.id);
-    const previousScript = existingIndex === -1 ? null : scripts[existingIndex];
+    const previousScript = existingIndex === -1 ? null : { ...scripts[existingIndex] };
 
     if (existingIndex === -1) {
         scripts.push(updatedScript);
     } else {
-        scripts[existingIndex] = updatedScript;
+        Object.assign(scripts[existingIndex], updatedScript);
     }
 
     try {
         await saveRegexScriptList(scriptType, scripts);
         allowRegexScriptTypeAfterEditSave(scriptType);
-        ensureRegexScriptGroupMeta(scriptType, updatedScript.id, { pendingAssignment: existingIndex === -1 });
-        saveRegexGroupSettings();
-        await syncRegexVueManagerAfterDataChange();
+        const scriptGroupMetaChanged = ensureRegexScriptGroupMeta(scriptType, updatedScript.id, { pendingAssignment: existingIndex === -1 });
+        const currentOrderPreserved = preserveRegexVueCurrentOrderInGroupMeta(scriptType);
+        const groupMetaChanged = scriptGroupMetaChanged || currentOrderPreserved;
+        if (groupMetaChanged) {
+            saveRegexGroupSettings();
+        }
+        if (existingIndex === -1) {
+            await syncRegexVueManagerAfterDataChange();
+        } else {
+            updateRegexVueScriptModelAfterEdit(scriptType, updatedScript.id, scripts[existingIndex]);
+        }
         queueRegexChatReloadAfterPanelClose();
     } catch (error) {
         if (existingIndex === -1) {
@@ -8084,18 +8317,79 @@ async function openOptimizedRegexEditorWithScript(scriptType, script) {
                 scripts.splice(insertedIndex, 1);
             }
         } else {
-            scripts[existingIndex] = previousScript;
+            Object.assign(scripts[existingIndex], previousScript);
+            updateRegexVueScriptModelAfterEdit(scriptType, updatedScript.id, scripts[existingIndex]);
         }
 
         console.debug(`${LOG_PREFIX} Failed to save regex script`, error);
         toastr.error(t`Failed to save regex script. See console for details.`);
-        syncRegexVueManagerState();
+        if (existingIndex === -1) {
+            syncRegexVueManagerState();
+        }
     }
+}
+
+function updateRegexVueScriptModelAfterEdit(scriptType, scriptId, script) {
+    const modelScript = getRegexVueScriptModelById(scriptType, scriptId);
+
+    if (!modelScript || !script) {
+        return false;
+    }
+
+    if (modelScript !== script) {
+        Object.assign(modelScript, script);
+    }
+
+    return true;
+}
+
+function preserveRegexVueCurrentOrderInGroupMeta(scriptType) {
+    const manager = getRegexVueManagerState();
+    const typeKey = getRegexScriptTypeKey(scriptType);
+    const list = manager.state?.lists?.[typeKey];
+
+    if (!list) {
+        return false;
+    }
+
+    const groupState = getRegexGroupStateForScriptType(scriptType);
+    let changed = false;
+
+    for (const group of list.groups ?? []) {
+        const groupId = group.isPendingAssignment
+            ? REGEX_PENDING_ASSIGNMENT_GROUP_ID
+            : group.isUngrouped
+                ? REGEX_UNGROUPED_GROUP_ID
+                : group.id;
+
+        let order = 0;
+
+        for (const script of group.scripts ?? []) {
+            if (!script?.id) {
+                continue;
+            }
+
+            const previousMeta = groupState.scripts[script.id];
+            const nextMeta = { groupId, order };
+
+            if (
+                previousMeta?.groupId !== nextMeta.groupId
+                || Number(previousMeta?.order) !== nextMeta.order
+            ) {
+                groupState.scripts[script.id] = nextMeta;
+                changed = true;
+            }
+
+            order += 1;
+        }
+    }
+
+    return changed;
 }
 
 function ensureRegexScriptGroupMeta(scriptType, scriptId, { pendingAssignment = false } = {}) {
     if (!scriptId) {
-        return;
+        return false;
     }
 
     const groupState = getRegexGroupStateForScriptType(scriptType);
@@ -8106,16 +8400,22 @@ function ensureRegexScriptGroupMeta(scriptType, scriptId, { pendingAssignment = 
             groupId: pendingAssignment ? REGEX_PENDING_ASSIGNMENT_GROUP_ID : REGEX_UNGROUPED_GROUP_ID,
             order: Object.keys(groupState.scripts).length,
         };
-        return;
+        return true;
     }
+
+    let changed = false;
 
     if (!existingMeta.groupId) {
         existingMeta.groupId = REGEX_UNGROUPED_GROUP_ID;
+        changed = true;
     }
 
     if (!Number.isFinite(Number(existingMeta.order))) {
         existingMeta.order = Object.keys(groupState.scripts).length;
+        changed = true;
     }
+
+    return changed;
 }
 
 async function restoreRegexRowsAfterVueManagerRemove() {
@@ -9493,90 +9793,6 @@ function updateRegexVueBulkControls() {
     $('#bulk_regex_move_to_preset').toggle(hasGlobalScripts || hasScopedScripts);
 }
 
-function applyWorldInfoDrawerOptimization() {
-    if (extensionState[WORLD_INFO_DRAWER_HANDLER_KEY]) {
-        return;
-    }
-
-    const handler = (event) => {
-        handleWorldInfoDrawerToggleClick(event);
-    };
-
-    extensionState[WORLD_INFO_DRAWER_HANDLER_KEY] = handler;
-    document.addEventListener('click', handler, true);
-}
-
-function applyWorldInfoLazySelect2Optimization() {
-    if (extensionState[WORLD_INFO_LAZY_SELECT2_PATCH_KEY]) {
-        return;
-    }
-
-    const originalSelect2 = globalThis.jQuery?.fn?.select2;
-
-    if (typeof originalSelect2 !== 'function') {
-        console.warn(`${LOG_PREFIX} Select2 is unavailable; World Info lazy select2 optimization was not installed`);
-        return;
-    }
-
-    function patchedSelect2(...args) {
-        if (!shouldAttemptWorldInfoLazySelect2(args)) {
-            return originalSelect2.apply(this, args);
-        }
-
-        const elements = this.toArray();
-
-        if (!elements.some(element => shouldDeferWorldInfoSelect2(element))) {
-            return originalSelect2.apply(this, args);
-        }
-
-        elements.forEach(element => {
-            const control = $(element);
-
-            if (shouldDeferWorldInfoSelect2(element)) {
-                deferWorldInfoSelect2(element, args, originalSelect2);
-            } else {
-                originalSelect2.apply(control, args);
-            }
-        });
-
-        return this;
-    }
-
-    patchedSelect2.__baiBaiToolkitWorldInfoLazySelect2Patched = true;
-    patchedSelect2.__baiBaiToolkitOriginalSelect2 = originalSelect2;
-    Object.assign(patchedSelect2, originalSelect2);
-    globalThis.jQuery.fn.select2 = patchedSelect2;
-    extensionState[WORLD_INFO_LAZY_SELECT2_PATCH_KEY] = true;
-}
-
-function applyWorldInfoCharacterFilterOptionsOptimization() {
-    if (extensionState[WORLD_INFO_CHARACTER_FILTER_APPEND_PATCH_KEY]) {
-        return;
-    }
-
-    const originalAppend = globalThis.jQuery?.fn?.append;
-
-    if (typeof originalAppend !== 'function') {
-        console.warn(`${LOG_PREFIX} jQuery.append is unavailable; World Info character filter option optimization was not installed`);
-        return;
-    }
-
-    function patchedAppend(...args) {
-        if (shouldDeferWorldInfoCharacterFilterAppend(this, args)) {
-            deferWorldInfoCharacterFilterOption(this[0], args[0]);
-            return this;
-        }
-
-        return originalAppend.apply(this, args);
-    }
-
-    patchedAppend.__baiBaiToolkitWorldInfoCharacterFilterAppendPatched = true;
-    patchedAppend.__baiBaiToolkitOriginalAppend = originalAppend;
-    Object.assign(patchedAppend, originalAppend);
-    globalThis.jQuery.fn.append = patchedAppend;
-    extensionState[WORLD_INFO_CHARACTER_FILTER_APPEND_PATCH_KEY] = true;
-}
-
 function applyCharacterSearchInputOptimization() {
     const state = extensionState[CHARACTER_SEARCH_OPTIMIZATION_KEY] || {
         installed: false,
@@ -10149,185 +10365,8 @@ function removeCharacterListAvatarLazyLoadStyle() {
     document.getElementById(CHARACTER_LIST_AVATAR_LAZY_LOAD_STYLE_ID)?.remove();
 }
 
-function shouldDeferWorldInfoCharacterFilterAppend(targets, args) {
-    if (!settings.worldInfoDrawerOptimizationEnabled) {
-        return false;
-    }
-
-    if (targets.length !== 1 || args.length !== 1) {
-        return false;
-    }
-
-    const element = targets[0];
-    const option = args[0];
-
-    return element instanceof HTMLSelectElement
-        && option instanceof HTMLOptionElement
-        && element.matches('#world_popup_entries_list .world_entry_edit select[name="characterFilter"]')
-        && element.dataset[WORLD_INFO_LAZY_SELECT2_DATASET_KEY] === 'true';
-}
-
-function deferWorldInfoCharacterFilterOption(select, option) {
-    extensionState.worldInfoDeferredCharacterFilterOptions ??= new WeakMap();
-
-    const options = extensionState.worldInfoDeferredCharacterFilterOptions.get(select) ?? [];
-    options.push(option);
-    extensionState.worldInfoDeferredCharacterFilterOptions.set(select, options);
-    select.dataset[WORLD_INFO_DEFERRED_OPTIONS_DATASET_KEY] = 'true';
-}
-
-function initializeDeferredWorldInfoCharacterFilterOptions(select) {
-    const options = extensionState.worldInfoDeferredCharacterFilterOptions?.get(select);
-
-    if (!options?.length) {
-        return;
-    }
-
-    const fragment = document.createDocumentFragment();
-
-    for (const option of options) {
-        fragment.append(option);
-    }
-
-    extensionState.worldInfoDeferredCharacterFilterOptions.delete(select);
-    delete select.dataset[WORLD_INFO_DEFERRED_OPTIONS_DATASET_KEY];
-    select.append(fragment);
-}
-
-function shouldAttemptWorldInfoLazySelect2(args) {
-    if (!settings.worldInfoDrawerOptimizationEnabled) {
-        return false;
-    }
-
-    const firstArg = args[0];
-    return typeof firstArg === 'object' && firstArg !== null && !Array.isArray(firstArg);
-}
-
-function shouldDeferWorldInfoSelect2(element) {
-    if (!(element instanceof HTMLSelectElement)) {
-        return false;
-    }
-
-    if (!element.matches(WORLD_INFO_LAZY_SELECT2_SELECTOR)) {
-        return false;
-    }
-
-    if ($(element).data('select2')) {
-        return false;
-    }
-
-    return element.dataset[WORLD_INFO_LAZY_SELECT2_DATASET_KEY] !== 'true';
-}
-
-function deferWorldInfoSelect2(element, args, originalSelect2) {
-    element.dataset[WORLD_INFO_LAZY_SELECT2_DATASET_KEY] = 'true';
-    element.classList.add('bai-bai-toolkit-lazy-select2');
-
-    const state = {
-        args: [...args],
-        originalSelect2,
-    };
-
-    const activate = (event) => {
-        initializeDeferredWorldInfoSelect2(element, { open: event?.type === 'pointerdown' || event?.type === 'mousedown' });
-    };
-
-    state.activate = activate;
-    extensionState.worldInfoLazySelect2State ??= new WeakMap();
-    extensionState.worldInfoLazySelect2State.set(element, state);
-
-    element.addEventListener('pointerdown', activate, { capture: true });
-    element.addEventListener('mousedown', activate, { capture: true });
-    element.addEventListener('focus', activate, { capture: true });
-}
-
-function initializeDeferredWorldInfoSelect2(target, { open = false } = {}) {
-    const elements = target instanceof Element
-        ? [target]
-        : Array.from(target.querySelectorAll?.(`select[data-${toKebabCase(WORLD_INFO_LAZY_SELECT2_DATASET_KEY)}="true"]`) ?? []);
-
-    for (const element of elements) {
-        const state = extensionState.worldInfoLazySelect2State?.get(element);
-
-        if (!state) {
-            continue;
-        }
-
-        element.removeEventListener('pointerdown', state.activate, true);
-        element.removeEventListener('mousedown', state.activate, true);
-        element.removeEventListener('focus', state.activate, true);
-        delete element.dataset[WORLD_INFO_LAZY_SELECT2_DATASET_KEY];
-        element.classList.remove('bai-bai-toolkit-lazy-select2');
-        extensionState.worldInfoLazySelect2State.delete(element);
-
-        initializeDeferredWorldInfoCharacterFilterOptions(element);
-        state.originalSelect2.apply($(element), state.args);
-
-        if (open && $(element).data('select2')) {
-            setTimeout(() => {
-                try {
-                    $(element).select2('open');
-                } catch {
-                    // Ignore controls that were detached while the open was queued.
-                }
-            }, 0);
-        }
-    }
-}
-
 function toKebabCase(value) {
     return String(value).replace(/[A-Z]/g, match => `-${match.toLowerCase()}`);
-}
-
-function handleWorldInfoDrawerToggleClick(event) {
-    if (!settings.worldInfoDrawerOptimizationEnabled) {
-        return;
-    }
-
-    const target = event.target instanceof Element ? event.target : null;
-    const toggle = target?.closest(WORLD_INFO_ENTRY_DRAWER_TOGGLE_SELECTOR);
-
-    if (!target || !toggle || !toggle.contains(target)) {
-        return;
-    }
-
-    if (target.classList.contains('text_pole')) {
-        return;
-    }
-
-    const drawer = toggle.closest(WORLD_INFO_ENTRY_DRAWER_SELECTOR);
-    const icon = drawer?.querySelector(':scope > .inline-drawer-header .inline-drawer-icon');
-    const content = drawer?.querySelector(':scope > .inline-drawer-content');
-
-    if (!drawer || !icon || !content) {
-        return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-
-    $(content).stop(true, true);
-
-    const expand = getComputedStyle(content).display === 'none';
-
-    icon.classList.toggle('down', !expand);
-    icon.classList.toggle('up', expand);
-    icon.classList.toggle('fa-circle-chevron-down', !expand);
-    icon.classList.toggle('fa-circle-chevron-up', expand);
-
-    if (expand && !content.querySelector(':scope > .world_entry_edit')) {
-        $(drawer).trigger('inline-drawer-toggle');
-    }
-
-    content.style.display = expand ? 'block' : 'none';
-    content.style.height = '';
-
-    if (!CSS.supports('field-sizing', 'content')) {
-        content.querySelectorAll('textarea.autoSetHeight').forEach(textarea => {
-            void resetScrollHeight(textarea);
-        });
-    }
 }
 
 function dispatchDescriptionEditorSourceInput(source) {
@@ -10552,19 +10591,9 @@ function attachDescriptionCodeMirrorEditor(state, source) {
         }, 0);
     };
 
-    const stopPropagationHandler = (event) => {
-        event.stopPropagation();
-    };
-
-    wrapper.addEventListener('mousedown', stopPropagationHandler);
-    wrapper.addEventListener('pointerdown', stopPropagationHandler);
-    wrapper.addEventListener('click', stopPropagationHandler);
     wrapper.addEventListener('focusout', focusOutHandler);
 
     state.listeners.push(
-        { target: wrapper, type: 'mousedown', handler: stopPropagationHandler, options: undefined },
-        { target: wrapper, type: 'pointerdown', handler: stopPropagationHandler, options: undefined },
-        { target: wrapper, type: 'click', handler: stopPropagationHandler, options: undefined },
         { target: wrapper, type: 'focusout', handler: focusOutHandler, options: undefined }
     );
 
@@ -10662,39 +10691,6 @@ function createDescriptionCodeMirrorView(state, source, wrapper, modules) {
             if (update.docChanged) {
                 state.dirty = true;
             }
-        }),
-        EditorView.domEventHandlers({
-            beforeinput(event) {
-                event.stopPropagation();
-                return false;
-            },
-            input(event) {
-                event.stopPropagation();
-                return false;
-            },
-            keydown(event) {
-                event.stopPropagation();
-                return false;
-            },
-            keyup(event) {
-                event.stopPropagation();
-                return false;
-            },
-            click(event) {
-                event.stopPropagation();
-                return false;
-            },
-            mousedown(event) {
-                event.stopPropagation();
-                return false;
-            },
-            pointerdown(event) {
-                event.stopPropagation();
-                return false;
-            },
-            scroll() {
-                return false;
-            },
         }),
         EditorView.theme({
             '&': {
@@ -12020,6 +12016,7 @@ function installSaveGenerateFetchHook() {
         installSaveGenerateNativeStopHandler(existing);
         installSaveGenerateRecoveryInputBlocker(existing);
         installSaveGenerateResumeHandlers(existing);
+        installSaveGenerateMessageDeleteHandler(existing);
         refreshSaveGenerateRecoveryUiLock(existing);
         queueSaveGenerateResumeCheck(existing, 'existing-hook', 500);
         return existing;
@@ -12058,6 +12055,7 @@ function installSaveGenerateFetchHook() {
         nativeStopHandlerInstalled: false,
         recoveryInputBlockerInstalled: false,
         resumeHandlersInstalled: false,
+        messageDeleteHandlerInstalled: false,
         isEnabled: () => settings.saveGenerateEnabled === true,
     };
 
@@ -12112,6 +12110,7 @@ function installSaveGenerateFetchHook() {
     installSaveGenerateNativeStopHandler(state);
     installSaveGenerateRecoveryInputBlocker(state);
     installSaveGenerateResumeHandlers(state);
+    installSaveGenerateMessageDeleteHandler(state);
     queueSaveGenerateResumeCheck(state, 'install', 500);
     console.debug(`${LOG_PREFIX} save-generate fetch hook installed`);
     return state;
@@ -13196,6 +13195,63 @@ function installSaveGenerateResumeHandlers(state) {
     window.addEventListener('pageshow', () => queue('pageshow'));
 }
 
+function installSaveGenerateMessageDeleteHandler(state) {
+    if (!state || state.messageDeleteHandlerInstalled || typeof eventSource?.on !== 'function') {
+        return;
+    }
+
+    state.messageDeleteHandlerInstalled = true;
+    eventSource.on(event_types.MESSAGE_DELETED, () => {
+        void discardCurrentChatSaveGenerateJobsAfterMessageDelete(state);
+    });
+}
+
+async function discardCurrentChatSaveGenerateJobsAfterMessageDelete(state) {
+    if (!state?.originalFetch || selected_group) {
+        return;
+    }
+
+    const chatId = getCurrentSaveGenerateChatId();
+    if (!chatId) {
+        return;
+    }
+
+    try {
+        const result = await discardSaveGenerateJobsForChat(state.originalFetch, chatId);
+        markSaveGenerateLocalChatJobsConsumed(state, chatId);
+        clearActiveSaveGenerateCancelTarget(state, { chatId });
+        clearSaveGenerateRecoveryLock(state, chatId);
+        state.lastResumeCheckChatId = chatId;
+        state.lastResumeCheckAt = Date.now();
+        console.debug(`${LOG_PREFIX} save-generate discarded jobs after message delete`, result);
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} save-generate discard after message delete failed`, error);
+    }
+}
+
+async function discardSaveGenerateJobsForChat(fetchFn, chatId) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId) {
+        return null;
+    }
+
+    const headers = new Headers(getRequestHeaders());
+    headers.set('Content-Type', 'application/json');
+    const response = await fetchFn(BAIBAOKU_SAVE_GENERATE_DISCARD_URL, {
+        method: 'POST',
+        headers,
+        cache: 'no-store',
+        body: JSON.stringify({ chatId: normalizedChatId }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.ok !== true) {
+        const error = new Error(payload?.message || payload?.error?.message || `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+    }
+    return payload.data || null;
+}
+
 function queueSaveGenerateResumeCheck(state, reason = 'unknown', delayMs = SAVE_GENERATE_RESUME_CHECK_DELAY_MS) {
     if (!state) {
         return;
@@ -13580,6 +13636,24 @@ function markSaveGenerateLocalJobConsumed(state, jobId) {
     for (const record of state.pendingJobs) {
         if (String(record?.id || '') === String(jobId)) {
             record.consumed = true;
+        }
+    }
+    cleanupSaveGenerateRecords(state);
+}
+
+function markSaveGenerateLocalChatJobsConsumed(state, chatId) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId || !Array.isArray(state?.pendingJobs)) {
+        return;
+    }
+
+    for (const record of state.pendingJobs) {
+        const recordChatId = String(record?.save?.chatId || record?.chatId || '').trim();
+        if (recordChatId === normalizedChatId) {
+            record.consumed = true;
+            if (record.id) {
+                markSaveGenerateJobSeen(record);
+            }
         }
     }
     cleanupSaveGenerateRecords(state);

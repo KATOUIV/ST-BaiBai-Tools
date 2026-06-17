@@ -206,16 +206,16 @@
                                 <span>切换美化优化</span>
                             </label>
                             <label class="checkbox_label" for="bai_bai_toolkit_world_info_drawer_optimization_enabled"
-                                title="世界书条目展开/收起时跳过高度动画，保留已初始化的编辑区，并延迟初始化部分较重的下拉控件和角色过滤选项。">
+                                title="优化原版世界书交互：条目快速展开、延迟初始化较重的下拉控件和角色过滤选项，并减少宏补全与浮层定位带来的额外开销。">
                                 <input id="bai_bai_toolkit_world_info_drawer_optimization_enabled" type="checkbox"
                                     class="checkbox">
-                                <span>世界书条目快速展开</span>
+                                <span>原版世界书优化</span>
                             </label>
-                            <label class="checkbox_label" for="bai_bai_toolkit_world_info_page_optimization_enabled"
-                                title="接管并优化世界书页面；后续会逐步替换原版世界书管理界面。">
-                                <input id="bai_bai_toolkit_world_info_page_optimization_enabled" type="checkbox"
+                            <label class="checkbox_label" for="bai_bai_toolkit_world_info_list_optimization_enabled"
+                                title="使用 Vue 接管世界书条目列表，并启用移动端新布局与展开动画。">
+                                <input id="bai_bai_toolkit_world_info_list_optimization_enabled" type="checkbox"
                                     class="checkbox">
-                                <span>世界书页面优化</span>
+                                <span>世界书新布局</span>
                             </label>
                             <label class="checkbox_label"
                                 for="bai_bai_toolkit_character_search_input_optimization_enabled"
@@ -297,6 +297,12 @@
                                 <input id="bai_bai_toolkit_baibaoku_settings_acceleration_enabled" type="checkbox"
                                     class="checkbox">
                                 <span>Settings get/save 加速</span>
+                            </label>
+                            <label class="checkbox_label" for="bai_bai_toolkit_baibaoku_lazy_theme_loading_enabled"
+                                title="&#x5F00;&#x542F;&#x540E;&#xFF0C;Settings get &#x8FD4;&#x56DE;&#x8F7B;&#x91CF;&#x7F8E;&#x5316;&#x5217;&#x8868;&#xFF0C;&#x5207;&#x6362;&#x7F8E;&#x5316;&#x65F6;&#x518D;&#x6309;&#x9700;&#x8BFB;&#x53D6;&#x5B8C;&#x6574;&#x7F8E;&#x5316;&#xFF1B;&#x5F00;&#x542F;&#x6B64;&#x9879;&#x4F1A;&#x540C;&#x6B65;&#x5F00;&#x542F; Settings get/save &#x52A0;&#x901F;&#x3002;">
+                                <input id="bai_bai_toolkit_baibaoku_lazy_theme_loading_enabled" type="checkbox"
+                                    class="checkbox">
+                                <span>&#x7F8E;&#x5316;&#x61D2;&#x52A0;&#x8F7D;</span>
                             </label>
                             <label class="checkbox_label" for="bai_bai_toolkit_extension_manifest_bundle_enabled"
                                 title="加载扩展时，通过柏宝库一次性获取扩展清单和 manifest 缓存，减少大量 /scripts/extensions/.../manifest.json 请求；关闭后完全走 SillyTavern 原生请求。">
