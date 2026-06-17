@@ -9897,6 +9897,7 @@ function applyWorldInfoListOptimization() {
         restoreWorldInfoVueListPaginationPatch(state);
         removeWorldInfoMobileLayoutMutationObserver(state);
         removeWorldInfoMobileHeaderLayoutWatcher(state);
+        restoreWorldInfoPopupLayout();
         restoreWorldInfoMobileExpandedLayouts();
         restoreWorldInfoMobileHeaderLayouts();
         removeWorldInfoMobileHeaderLayoutStyle();
@@ -10202,6 +10203,7 @@ function normalizeWorldInfoAppendArguments(args) {
 }
 
 function refreshWorldInfoVueListAfterAppend(list) {
+    applyWorldInfoPopupLayout();
     applyWorldInfoMobileHeaderLayouts(list);
     applyWorldInfoMobileExpandedLayouts(list);
 
@@ -10226,9 +10228,11 @@ function installWorldInfoMobileHeaderLayoutWatcher(state = getWorldInfoVueListOp
         }
 
         if (shouldUseWorldInfoMobileHeaderLayout()) {
+            applyWorldInfoPopupLayout();
             applyWorldInfoMobileHeaderLayouts(list);
             applyWorldInfoMobileExpandedLayouts(list);
         } else {
+            restoreWorldInfoPopupLayout();
             restoreWorldInfoMobileExpandedLayouts(list);
             restoreWorldInfoMobileHeaderLayouts(list);
         }
@@ -10288,9 +10292,11 @@ function installWorldInfoMobileLayoutMutationObserver(state = getWorldInfoVueLis
         }
 
         if (shouldUseWorldInfoMobileHeaderLayout()) {
+            applyWorldInfoPopupLayout();
             applyWorldInfoMobileHeaderLayouts(list);
             applyWorldInfoMobileExpandedLayouts(list);
         } else {
+            restoreWorldInfoPopupLayout();
             restoreWorldInfoMobileExpandedLayouts(list);
             restoreWorldInfoMobileHeaderLayouts(list);
         }
@@ -10352,6 +10358,220 @@ function applyWorldInfoMobileExpandedLayouts(root = document) {
             applyWorldInfoMobileExpandedLayout(edit);
         });
     });
+}
+
+function applyWorldInfoPopupLayout() {
+    if (!shouldUseWorldInfoMobileHeaderLayout()) {
+        restoreWorldInfoPopupLayout();
+        return;
+    }
+
+    const popup = document.getElementById('world_popup');
+    const list = document.getElementById('world_popup_entries_list');
+
+    if (!(popup instanceof HTMLElement)
+        || !(list instanceof HTMLElement)
+        || list.parentElement !== popup
+        || popup.dataset.baiBaiWorldInfoPopupLayout === 'true') {
+        return;
+    }
+
+    const nodesBeforeList = [];
+    for (let node = popup.firstChild; node && node !== list; node = node.nextSibling) {
+        nodesBeforeList.push(node);
+    }
+
+    if (!nodesBeforeList.some(node => node instanceof HTMLElement)) {
+        return;
+    }
+
+    const marker = document.createComment('bai-bai-world-info-popup-layout-placeholder');
+    const header = document.createElement('div');
+    header.className = 'bai-bai-wi-popup-header';
+    const sourceStash = document.createElement('div');
+    sourceStash.className = 'bai-bai-wi-popup-source-stash';
+    sourceStash.hidden = true;
+    const movedNodes = [];
+
+    nodesBeforeList[0].before(marker);
+    marker.after(header);
+    header.append(sourceStash);
+    sourceStash.append(...nodesBeforeList);
+
+    applyWorldInfoPopupHeaderRows(header, sourceStash, movedNodes);
+
+    popup.dataset.baiBaiWorldInfoPopupLayout = 'true';
+    popup.__baiBaiWorldInfoPopupLayout = {
+        header,
+        marker,
+        nodesBeforeList,
+        movedNodes,
+    };
+}
+
+function restoreWorldInfoPopupLayout() {
+    const popup = document.getElementById('world_popup');
+    const state = popup?.__baiBaiWorldInfoPopupLayout;
+
+    if (!(popup instanceof HTMLElement) || !state?.header) {
+        return;
+    }
+
+    for (const item of state.movedNodes || []) {
+        if (item?.node instanceof Node && item.placeholder instanceof Comment && item.placeholder.parentNode) {
+            item.placeholder.replaceWith(item.node);
+        }
+    }
+
+    if (state.marker instanceof Comment && state.marker.parentNode) {
+        state.marker.replaceWith(...(state.nodesBeforeList || Array.from(state.header.childNodes)));
+    } else if (state.header.parentNode) {
+        state.header.before(...(state.nodesBeforeList || Array.from(state.header.childNodes)));
+    }
+
+    state.header.remove();
+    delete popup.__baiBaiWorldInfoPopupLayout;
+    delete popup.dataset.baiBaiWorldInfoPopupLayout;
+}
+
+function applyWorldInfoPopupHeaderRows(header, sourceStash, movedNodes) {
+    const select = sourceStash.querySelector('#world_editor_select');
+    const createButton = sourceStash.querySelector('#world_create_button');
+    const orNode = findWorldInfoPopupOrNode(sourceStash, createButton);
+    const selectNodes = getWorldInfoPopupControlVisualNodes(select);
+    const selectNodeSet = new Set(selectNodes);
+    const pushedNodes = new Set();
+    const flatNodes = getWorldInfoPopupFlatHeaderNodes(sourceStash);
+
+    for (const node of selectNodes) {
+        if (flatNodes.includes(node)) {
+            moveWorldInfoPopupLayoutNode(node, header, movedNodes);
+            pushedNodes.add(node);
+        }
+    }
+
+    if (orNode instanceof Node) {
+        moveWorldInfoPopupLayoutNode(orNode, header, movedNodes);
+        pushedNodes.add(orNode);
+    }
+
+    if (createButton instanceof Node) {
+        moveWorldInfoPopupLayoutNode(createButton, header, movedNodes);
+        pushedNodes.add(createButton);
+    }
+
+    for (const node of flatNodes) {
+        if (pushedNodes.has(node) || selectNodeSet.has(node)) {
+            continue;
+        }
+
+        moveWorldInfoPopupLayoutNode(node, header, movedNodes);
+        pushedNodes.add(node);
+    }
+}
+
+function getWorldInfoPopupFlatHeaderNodes(root) {
+    const nodes = [];
+    collectWorldInfoPopupFlatHeaderNodes(root, nodes);
+    return nodes;
+}
+
+function collectWorldInfoPopupFlatHeaderNodes(parent, nodes) {
+    for (const node of Array.from(parent.childNodes)) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            if (node.nodeValue?.trim()) {
+                nodes.push(node);
+            }
+            continue;
+        }
+
+        if (!(node instanceof HTMLElement)) {
+            continue;
+        }
+
+        if (isWorldInfoPopupFlatHeaderItem(node)) {
+            nodes.push(node);
+            continue;
+        }
+
+        collectWorldInfoPopupFlatHeaderNodes(node, nodes);
+    }
+}
+
+function isWorldInfoPopupFlatHeaderItem(element) {
+    if (!(element instanceof HTMLElement)) {
+        return false;
+    }
+
+    if (element.id === 'world_info_pagination') {
+        return true;
+    }
+
+    if (element.matches([
+        '#world_editor_select',
+        '#world_create_button',
+        '.select2-container',
+        '.menu_button',
+        'button',
+        'input',
+        'select',
+        'textarea',
+        'a[href]',
+    ].join(','))) {
+        return true;
+    }
+
+    return element.childElementCount === 0 && Boolean(element.textContent?.trim());
+}
+
+function getWorldInfoPopupControlVisualNodes(control) {
+    if (!(control instanceof HTMLElement)) {
+        return [];
+    }
+
+    const nodes = [control];
+    const next = control.nextElementSibling;
+
+    if (next instanceof HTMLElement && next.classList.contains('select2-container')) {
+        nodes.push(next);
+    }
+
+    return nodes;
+}
+
+function moveWorldInfoPopupLayoutNode(node, target, movedNodes) {
+    if (!(node instanceof Node) || !(target instanceof HTMLElement)) {
+        return;
+    }
+
+    const placeholder = document.createComment('bai-bai-world-info-popup-inner-placeholder');
+    node.before(placeholder);
+    movedNodes.push({ node, placeholder });
+    target.append(node);
+}
+
+function findWorldInfoPopupOrNode(root, createButton) {
+    if (!(root instanceof HTMLElement)) {
+        return null;
+    }
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+        acceptNode(node) {
+            if (node === createButton || createButton?.contains?.(node)) {
+                return NodeFilter.FILTER_REJECT;
+            }
+
+            const text = node.textContent?.trim();
+
+            if (/^(\u6216|or)$/i.test(text || '')) {
+                return NodeFilter.FILTER_ACCEPT;
+            }
+
+            return NodeFilter.FILTER_SKIP;
+        },
+    });
+
+    return walker.nextNode();
 }
 
 function applyWorldInfoMobileExpandedLayout(edit) {
@@ -10809,6 +11029,35 @@ function installWorldInfoMobileHeaderLayoutStyle() {
     style.id = WORLD_INFO_MOBILE_HEADER_LAYOUT_STYLE_ID;
     style.textContent = `
 @media (max-width: 600px) {
+    #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        column-gap: 8px;
+        row-gap: 0;
+        margin-top: 20px;
+        width: 100%;
+        min-width: 0;
+    }
+
+    #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header > .bai-bai-wi-popup-source-stash {
+        display: none !important;
+    }
+
+    #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header > #world_editor_select,
+    #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header > .select2-container {
+        flex: 0 0 100%;
+        width: 100% !important;
+        min-width: 0;
+    }
+
+    #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header > #world_info_pagination {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+    }
+
     #world_popup_entries_list > .world_entry[data-bai-bai-world-info-mobile-header-layout="true"] > .world_entry_form > .inline-drawer > .inline-drawer-header {
         display: block;
         padding: 0;
