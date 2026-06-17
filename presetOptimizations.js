@@ -1,4 +1,6 @@
-import { event_types, eventSource, getCurrentChatId, getRequestHeaders, isGenerating, saveSettings } from '../../../../script.js';
+import { event_types, eventSource, getCurrentChatId, getRequestHeaders, saveSettings } from '../../../../script.js';
+import * as scriptModule from '../../../../script.js';
+import * as groupChatsModule from '../../../group-chats.js';
 import { oai_settings, openai_setting_names, openai_settings, promptManager, settingsToUpdate } from '../../../openai.js';
 import { getPresetManager } from '../../../preset-manager.js';
 import { getTokenizerModel } from '../../../tokenizers.js';
@@ -78,6 +80,18 @@ const PRESET_VUE_TOUCH_START_THRESHOLD_PX = 10;
 const PRESET_VUE_GROUP_HEADER_TOGGLE_DISTANCE_PX = 6;
 const PRESET_VUE_GROUP_HEADER_DRAG_SUPPRESS_MS = 350;
 const PRESET_DRAG_LONG_PRESS_MS = 300;
+
+function isPresetGenerationActive() {
+    if (typeof scriptModule.isGenerating === 'function') {
+        try {
+            return Boolean(scriptModule.isGenerating());
+        } catch {
+            return false;
+        }
+    }
+
+    return Boolean(scriptModule.is_send_press || groupChatsModule.is_group_generating);
+}
 const PRESET_DRAG_CANCEL_DISTANCE_PX = 12;
 const PRESET_DRAG_CLICK_SUPPRESS_MS = 500;
 const OPENAI_PRESET_SELECT_SELECTOR = '#settings_preset_openai';
@@ -2102,6 +2116,11 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     line-height: 1 !important;
 }
 
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.bai-bai-preset-drag-locked li.completion_prompt_manager_prompt .drag-handle,
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.bai-bai-preset-drag-locked .bai-bai-preset-group-header {
+    cursor: default !important;
+}
+
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-favorites {
     display: flex;
     flex-direction: column;
@@ -4003,6 +4022,29 @@ function rebuildPresetVuePromptListDraggable() {
     return true;
 }
 
+function isPresetVuePromptDragLocked() {
+    return settings.presetVueDragLocked === true;
+}
+
+function togglePresetVuePromptDragLocked() {
+    const nextLocked = !isPresetVuePromptDragLocked();
+    settings.presetVueDragLocked = nextLocked;
+
+    if (nextLocked) {
+        cancelPromptManagerCustomDragPending();
+        finishPromptManagerCustomDrag({ cancelled: true });
+        cancelPresetVuePromptGroupHeaderCustomDrag(getPresetVuePromptListManagerState());
+        setPresetVuePromptDragging(getPresetVuePromptListManagerState().state, false);
+        getPresetVuePromptListManagerState().dragSnapshot = null;
+    }
+
+    rebuildPresetVuePromptListDraggable();
+
+    if (typeof savePresetOptimizationSettings === 'function') {
+        savePresetOptimizationSettings();
+    }
+}
+
 function syncPresetVuePromptGroupBodyMountState(model) {
     if (!model || !Array.isArray(model.items)) {
         return;
@@ -4394,6 +4436,7 @@ function createPresetVuePromptListRootComponent(vue, vueDraggableNext, model) {
 function renderPresetVuePromptListHeader(h, model) {
     const prefix = promptManager?.configuration?.prefix ?? '';
     const selecting = Boolean(model?.rangeSelection?.active);
+    const dragLocked = isPresetVuePromptDragLocked();
 
     return h('li', { class: `${prefix}prompt_manager_list_head`, key: 'header' }, [
         h('span', { 'data-i18n': 'Name' }, 'Name'),
@@ -4417,6 +4460,22 @@ function renderPresetVuePromptListHeader(h, model) {
                         void startPresetVuePromptGroupRangeSelection(model);
                     },
                 }),
+            h('span', {
+                class: [
+                    'menu_button',
+                    'fa-solid',
+                    dragLocked ? 'fa-lock' : 'fa-lock-open',
+                    'bai-bai-preset-drag-lock-toggle',
+                    dragLocked ? 'bai-bai-preset-drag-lock-toggle-active' : '',
+                ],
+                title: dragLocked ? t`解锁预设拖拽` : t`锁定预设拖拽`,
+                'aria-pressed': dragLocked ? 'true' : 'false',
+                onClick: event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    togglePresetVuePromptDragLocked();
+                },
+            }),
         ]),
     ]);
 }
@@ -4431,20 +4490,25 @@ function renderPresetVuePromptListSeparator(h) {
 
 function renderPresetVuePromptDraggable(h, vueDraggableNext, model) {
     const handleSelector = getPresetVuePromptDragHandleSelector();
+    const dragLocked = isPresetVuePromptDragLocked();
     const draggableProps = {
         tag: 'ul',
         id: PRESET_PROMPT_MANAGER_LIST_SELECTOR.slice(1),
-        class: model.listClassName,
+        class: [
+            model.listClassName,
+            dragLocked ? 'bai-bai-preset-drag-locked' : '',
+        ],
         list: model.items,
         group: {
             name: 'bai-bai-preset-prompts',
-            pull: true,
-            put: canPutPresetVuePromptIntoTopLevelList,
+            pull: !dragLocked,
+            put: dragLocked ? false : canPutPresetVuePromptIntoTopLevelList,
         },
         draggable: PRESET_VUE_TOP_LEVEL_DRAGGABLE_SELECTOR,
         filter: PRESET_DRAG_INTERACTIVE_SELECTOR,
         preventOnFilter: false,
         sort: false,
+        disabled: dragLocked,
         animation: 0,
         emptyInsertThreshold: PRESET_VUE_EMPTY_INSERT_THRESHOLD_PX,
         dragoverBubble: false,
@@ -4490,6 +4554,11 @@ function renderPresetVuePromptDraggable(h, vueDraggableNext, model) {
 function isPresetVuePromptTopLevelDragMoveAllowed(event, originalEvent) {
     const manager = getPresetVuePromptListManagerState();
 
+    if (isPresetVuePromptDragLocked()) {
+        clearPresetVuePromptManualDragPlacement(manager);
+        return false;
+    }
+
     if (manager.state?.rangeSelection?.active) {
         clearPresetVuePromptManualDragPlacement(manager);
         return false;
@@ -4509,6 +4578,11 @@ function isPresetVuePromptTopLevelDragMoveAllowed(event, originalEvent) {
 function isPresetVuePromptGroupDragMoveAllowed(event, originalEvent) {
     const manager = getPresetVuePromptListManagerState();
 
+    if (isPresetVuePromptDragLocked()) {
+        clearPresetVuePromptManualDragPlacement(manager);
+        return false;
+    }
+
     if (manager.state?.rangeSelection?.active) {
         clearPresetVuePromptManualDragPlacement(manager);
         return false;
@@ -4526,10 +4600,18 @@ function isPresetVuePromptGroupDragMoveAllowed(event, originalEvent) {
 }
 
 function canPutPresetVuePromptIntoGroupList(to, from, dragElement) {
+    if (isPresetVuePromptDragLocked()) {
+        return false;
+    }
+
     return dragElement instanceof HTMLElement && dragElement.matches('li.completion_prompt_manager_prompt_draggable');
 }
 
 function canPutPresetVuePromptIntoTopLevelList(to, from, dragElement) {
+    if (isPresetVuePromptDragLocked()) {
+        return false;
+    }
+
     if (!(to instanceof HTMLElement) || to.id !== PRESET_PROMPT_MANAGER_LIST_SELECTOR.slice(1)) {
         return false;
     }
@@ -4693,7 +4775,7 @@ function beginPresetVuePromptManualDragWithItem(model, draggedItem, event) {
     const manager = getPresetVuePromptListManagerState();
     const list = getPromptManagerListElement();
 
-    if (!model || !draggedItem) {
+    if (isPresetVuePromptDragLocked() || !model || !draggedItem) {
         return false;
     }
 
@@ -5809,6 +5891,7 @@ function renderPresetVuePromptFavorites(h, item) {
 function renderPresetVuePromptGroup(h, vueDraggableNext, item) {
     const handleSelector = getPresetVuePromptDragHandleSelector();
     const groupEnabled = isPresetVuePromptGroupEnabled(item);
+    const dragLocked = isPresetVuePromptDragLocked();
     const draggableProps = {
         tag: 'ul',
         class: [
@@ -5818,13 +5901,14 @@ function renderPresetVuePromptGroup(h, vueDraggableNext, item) {
         list: item.children,
         group: {
             name: 'bai-bai-preset-prompts',
-            pull: true,
-            put: canPutPresetVuePromptIntoGroupList,
+            pull: !dragLocked,
+            put: dragLocked ? false : canPutPresetVuePromptIntoGroupList,
         },
         draggable: 'li.completion_prompt_manager_prompt_draggable',
         filter: PRESET_DRAG_INTERACTIVE_SELECTOR,
         preventOnFilter: false,
         sort: false,
+        disabled: dragLocked,
         animation: 0,
         emptyInsertThreshold: PRESET_VUE_EMPTY_INSERT_THRESHOLD_PX,
         dragoverBubble: true,
@@ -5952,6 +6036,10 @@ function formatPresetVuePromptGroupCount(item) {
 }
 
 function beginPresetVuePromptGroupHeaderGesture(event, groupId) {
+    if (isPresetVuePromptDragLocked()) {
+        return;
+    }
+
     if (isPresetVuePromptGroupHeaderInteractiveEvent(event)) {
         return;
     }
@@ -6390,6 +6478,10 @@ function configurePresetVueSortableDragDelayForEvent(event) {
         return;
     }
 
+    if (isPresetVuePromptDragLocked()) {
+        return;
+    }
+
     const target = event.target instanceof Element ? event.target : null;
 
     if (!target) {
@@ -6470,6 +6562,10 @@ function vibratePresetVuePromptDragFeedback() {
 }
 
 function getPresetVuePromptDragHandleSelector() {
+    if (isPresetVuePromptDragLocked()) {
+        return '__bai_bai_preset_drag_locked__';
+    }
+
     if (!isMobile()) {
         return '';
     }
@@ -10324,7 +10420,7 @@ async function runPromptManagerContextTokenRefresh(reason, attempt = 0, allowNoC
     }
 
     try {
-        if (typeof isGenerating === 'function' && isGenerating()) {
+        if (isPresetGenerationActive()) {
             return;
         }
 
@@ -12004,7 +12100,7 @@ async function refreshPromptManagerTokens() {
         return;
     }
 
-    if (typeof isGenerating === 'function' && isGenerating()) {
+    if (isPresetGenerationActive()) {
         return;
     }
 
