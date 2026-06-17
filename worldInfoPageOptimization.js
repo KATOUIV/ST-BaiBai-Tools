@@ -625,6 +625,8 @@ function ensureWorldInfoEditorSelectSearch(select = document.getElementById('wor
     const select2 = $select.data('select2');
 
     if (select2) {
+        select2.options?.set?.('allowClear', false);
+        select2.options?.set?.('dropdownCssClass', WORLD_INFO_EDITOR_SELECT_DROPDOWN_CLASS);
         select2.options?.set?.('minimumResultsForSearch', 0);
         select2.options?.set?.('searchInputPlaceholder', 'Search...');
         syncWorldInfoEditorSelect2Theme(select);
@@ -638,7 +640,7 @@ function ensureWorldInfoEditorSelectSearch(select = document.getElementById('wor
         width: '100%',
         placeholder,
         searchInputPlaceholder: 'Search...',
-        allowClear: true,
+        allowClear: false,
         closeOnSelect: true,
         dropdownCssClass: WORLD_INFO_EDITOR_SELECT_DROPDOWN_CLASS,
         multiple: false,
@@ -2278,10 +2280,17 @@ function installWorldInfoMobileHeaderLayoutStyle() {
         flex-wrap: wrap;
         align-items: center;
         column-gap: 8px;
-        row-gap: 0;
+        justify-content: space-between;
+        row-gap: 7px;
         margin-top: 20px;
+        overflow: hidden;
         width: 100%;
         min-width: 0;
+    }
+
+    #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header > * {
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
     }
 
     #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header > .bai-bai-wi-popup-source-stash {
@@ -2317,6 +2326,10 @@ function installWorldInfoMobileHeaderLayoutStyle() {
     #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header > .select2-container .select2-selection__placeholder {
         color: var(--SmartThemeBodyColor);
         opacity: 0.65;
+    }
+
+    #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header > .select2-container .select2-selection__clear {
+        display: none !important;
     }
 
     #world_popup[data-bai-bai-world-info-popup-layout="true"] > .bai-bai-wi-popup-header > .select2-container .select2-selection__arrow {
@@ -2382,6 +2395,7 @@ function installWorldInfoMobileHeaderLayoutStyle() {
         flex-wrap: wrap;
         align-items: center;
         gap: 8px;
+        line-height: 1;
     }
 
     #world_popup_entries_list > .world_entry[data-bai-bai-world-info-mobile-header-layout="true"] > .world_entry_form > .inline-drawer > .inline-drawer-header {
