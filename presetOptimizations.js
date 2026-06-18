@@ -3300,7 +3300,10 @@ function restorePromptManagerStockDraggable() {
     }
 }
 
-function preparePromptManagerCustomDragList(list = document.querySelector(PRESET_PROMPT_MANAGER_LIST_SELECTOR)) {
+function preparePromptManagerCustomDragList(
+    list = document.querySelector(PRESET_PROMPT_MANAGER_LIST_SELECTOR),
+    { signature = '' } = {},
+) {
     if (!(list instanceof HTMLElement)) {
         return false;
     }
@@ -3310,11 +3313,24 @@ function preparePromptManagerCustomDragList(list = document.querySelector(PRESET
         return false;
     }
 
+    const manager = getPresetVuePromptListManagerState();
+    const prepareSignature = signature || '';
+    if (
+        prepareSignature
+        && manager.dragPreparedList === list
+        && manager.dragPreparedSignature === prepareSignature
+        && list.classList.contains(PRESET_DRAG_READY_CLASS)
+    ) {
+        return true;
+    }
+
     disablePromptManagerStockSortable(list);
     list.classList.add(PRESET_DRAG_READY_CLASS);
     syncPresetVuePromptListGapVariable(list);
     list.querySelectorAll('li.completion_prompt_manager_prompt .drag-handle')
         .forEach(handle => handle.classList.add('ui-sortable-handle'));
+    manager.dragPreparedList = list;
+    manager.dragPreparedSignature = prepareSignature;
     return true;
 }
 
@@ -3386,7 +3402,7 @@ async function installPresetVuePromptListManager() {
 
         if (manager.app && manager.host?.isConnected && manager.root?.isConnected) {
             syncPresetVuePromptListManagerState();
-            preparePromptManagerCustomDragList(manager.root);
+            preparePromptManagerCustomDragList(manager.root, { signature: manager.lastStructureSignature });
             return;
         }
 
@@ -3417,7 +3433,7 @@ async function installPresetVuePromptListManager() {
             promptManager.listElement = manager.root;
         }
         syncPresetVuePromptListManagerState();
-        preparePromptManagerCustomDragList(manager.root);
+        preparePromptManagerCustomDragList(manager.root, { signature: manager.lastStructureSignature });
         void loadPresetGlobalPromptLibrary().catch(error => {
             console.debug(`${LOG_PREFIX} Failed to load preset global prompt library`, error);
         });
@@ -3491,6 +3507,11 @@ function unmountPresetVuePromptListApp(manager = getPresetVuePromptListManagerSt
     manager.lastGroupHeaderGestureCanceledAt = 0;
     manager.lastDragStartedAt = 0;
     manager.lastDragEndedAt = 0;
+    manager.lastSyncSignature = '';
+    manager.lastStructureSignature = '';
+    manager.lastRenderPatchSyncCycle = 0;
+    manager.dragPreparedList = null;
+    manager.dragPreparedSignature = '';
 }
 
 function getPresetVuePromptListManagerState() {
@@ -3551,6 +3572,11 @@ function getPresetVuePromptListManagerState() {
             lastDragStartedAt: 0,
             lastDragEndedAt: 0,
             enabled: false,
+            lastSyncSignature: '',
+            lastStructureSignature: '',
+            lastRenderPatchSyncCycle: 0,
+            dragPreparedList: null,
+            dragPreparedSignature: '',
         };
     }
 
@@ -3763,7 +3789,9 @@ function installPresetVuePromptListRenderPatch() {
 
         await installPresetVuePromptListManager();
         syncPresetVuePromptListManagerState();
-        preparePromptManagerCustomDragList(getPromptManagerListElement());
+        const manager = getPresetVuePromptListManagerState();
+        manager.lastRenderPatchSyncCycle = extensionState.presetPromptManagerFastRenderCycle || 0;
+        preparePromptManagerCustomDragList(getPromptManagerListElement(), { signature: manager.lastStructureSignature });
         return undefined;
     };
 
@@ -4013,10 +4041,87 @@ function syncPresetVuePromptListManagerState() {
     repairPresetPromptOrderDuplicatesIfNeeded();
     repairPresetPromptGroupStateIfNeeded();
     syncCurrentPresetPromptGroupStateToPresetExtensionField({ persist: false });
+
+    const { renderSignature, structureSignature } = getPresetVuePromptListSyncSignatures(manager);
+    if (renderSignature && manager.lastSyncSignature === renderSignature) {
+        manager.lastStructureSignature = structureSignature;
+        return true;
+    }
+
     syncPresetVueGlobalLibraryModelState(manager.state);
     manager.state.items = buildPresetVuePromptListItems();
     syncPresetVuePromptGroupBodyMountState(manager.state);
+    manager.lastSyncSignature = renderSignature;
+    manager.lastStructureSignature = structureSignature;
     return true;
+}
+
+function getPresetVuePromptListSyncSignatures(manager = getPresetVuePromptListManagerState()) {
+    const promptOrder = promptManager?.getPromptOrderForCharacter?.(promptManager.activeCharacter) ?? [];
+    const prompts = Array.isArray(promptManager?.serviceSettings?.prompts)
+        ? promptManager.serviceSettings.prompts.filter(Boolean)
+        : [];
+    const promptById = new Map(prompts.map(prompt => [prompt.identifier, prompt]));
+    const groupState = getPresetPromptGroupState();
+    const favoriteState = getCurrentPresetPromptFavoritesState(
+        promptOrder.map(entry => entry?.identifier).filter(Boolean),
+    );
+    const counts = promptManager?.tokenHandler?.getCounts?.() ?? {};
+    const toggleDisabled = promptManager?.configuration?.toggleDisabled ?? [];
+    const overriddenPrompts = Array.isArray(promptManager?.overriddenPrompts) ? promptManager.overriddenPrompts : [];
+    const promptParts = promptOrder.map((entry, index) => {
+        const prompt = promptById.get(entry?.identifier);
+        return [
+            index,
+            entry?.identifier || '',
+            entry?.enabled === false ? 0 : 1,
+            prompt?.name || '',
+            prompt?.role || '',
+            prompt?.marker ? 1 : 0,
+            prompt?.system_prompt ? 1 : 0,
+            prompt?.forbid_overrides ? 1 : 0,
+            prompt?.injection_position ?? '',
+            prompt?.injection_depth ?? '',
+        ].join(':');
+    });
+    const groupSignature = JSON.stringify({
+        groups: groupState.groups ?? [],
+        prompts: groupState.prompts ?? {},
+    });
+    const favoriteSignature = JSON.stringify(favoriteState);
+    const globalLibrarySignature = JSON.stringify({
+        collapsed: Boolean(manager.globalLibraryCollapsed),
+        loading: Boolean(manager.globalLibraryLoading),
+        loaded: Boolean(manager.globalLibraryLoaded),
+        error: manager.globalLibraryError ? String(manager.globalLibraryError) : '',
+        items: normalizePresetGlobalPromptLibraryItems(manager.globalLibraryItems)
+            .map(item => [
+                item.id || '',
+                item.name || '',
+                item.role || '',
+                getStringHash(String(item.content ?? '')),
+            ]),
+    });
+    const structureSignature = getStringHash([
+        promptParts.join('|'),
+        groupSignature,
+        favoriteSignature,
+        globalLibrarySignature,
+        Array.from(toggleDisabled).join('|'),
+        overriddenPrompts.join('|'),
+    ].join('||'));
+    const tokenSignature = promptOrder
+        .map(entry => `${entry?.identifier || ''}:${counts[entry?.identifier] ?? ''}`)
+        .join('|');
+    const renderSignature = getStringHash([
+        structureSignature,
+        tokenSignature,
+        promptManager?.tokenUsage ?? '',
+        promptManager?.serviceSettings?.openai_max_context ?? '',
+        promptManager?.serviceSettings?.openai_max_tokens ?? '',
+    ].join('||'));
+
+    return { renderSignature, structureSignature };
 }
 
 function rebuildPresetVuePromptListDraggable() {
@@ -7681,7 +7786,9 @@ function toggleCurrentPresetPromptFavorite(promptId) {
     }
 
     syncPresetVuePromptListManagerState();
-    preparePromptManagerCustomDragList(getPromptManagerListElement());
+    preparePromptManagerCustomDragList(getPromptManagerListElement(), {
+        signature: getPresetVuePromptListManagerState().lastStructureSignature,
+    });
     return nextFavorites.includes(promptId);
 }
 
@@ -10185,7 +10292,9 @@ function handlePresetPromptGroupRenamed(event) {
 
     if (isPresetVuePromptListManagerActive()) {
         syncPresetVuePromptListManagerState();
-        preparePromptManagerCustomDragList(getPromptManagerListElement());
+        preparePromptManagerCustomDragList(getPromptManagerListElement(), {
+            signature: getPresetVuePromptListManagerState().lastStructureSignature,
+        });
     } else {
         schedulePresetVuePromptListManagerSync(0);
     }
@@ -10286,13 +10395,14 @@ function applyPresetChatLoadedTokenRefreshOptimization() {
         suppressMs = 0,
         delayMs = PRESET_CONTEXT_TOKEN_REFRESH_DELAY_MS,
         allowNoContext = false,
+        requireVisible = true,
     } = {}) => {
         if (!eventType || typeof eventSource?.on !== 'function') {
             return;
         }
 
         const handler = () => {
-            schedulePromptManagerContextTokenRefresh(reason, { suppressMs, delayMs, allowNoContext });
+            schedulePromptManagerContextTokenRefresh(reason, { suppressMs, delayMs, allowNoContext, requireVisible });
         };
 
         registrations.push({ eventType, handler });
@@ -10338,6 +10448,7 @@ function applyPresetChatLoadedTokenRefreshOptimization() {
         schedulePromptManagerContextTokenRefresh('token budget changed', {
             suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS,
             delayMs: PRESET_CONTEXT_TOKEN_REFRESH_DELAY_MS,
+            requireVisible: true,
         });
     };
 
@@ -10358,8 +10469,13 @@ function schedulePromptManagerContextTokenRefresh(reason, {
     suppressMs = 0,
     delayMs = PRESET_CONTEXT_TOKEN_REFRESH_DELAY_MS,
     allowNoContext = false,
+    requireVisible = true,
 } = {}) {
     if (!settings.presetSwitchOptimizationEnabled) {
+        return;
+    }
+
+    if (requireVisible && !isPromptManagerTokenPanelVisible()) {
         return;
     }
 
@@ -10381,11 +10497,12 @@ function schedulePromptManagerContextTokenRefresh(reason, {
     state.reason = reason || 'context change';
     state.attempt = 0;
     state.allowNoContext = Boolean(allowNoContext);
+    state.requireVisible = Boolean(requireVisible);
 
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
         state.timer = null;
-        void runPromptManagerContextTokenRefresh(state.reason, state.attempt, state.allowNoContext);
+        void runPromptManagerContextTokenRefresh(state.reason, state.attempt, state.allowNoContext, state.requireVisible);
     }, Math.max(0, Number(delayMs) || 0));
 }
 
@@ -10400,6 +10517,7 @@ function getPresetContextTokenRefreshState() {
             reason: '',
             attempt: 0,
             allowNoContext: false,
+            requireVisible: true,
             inFlight: false,
             suppressUntil: 0,
         };
@@ -10422,12 +10540,16 @@ async function handleChatCompletionModelChangedForPromptManager() {
     }
 }
 
-async function runPromptManagerContextTokenRefresh(reason, attempt = 0, allowNoContext = false) {
+async function runPromptManagerContextTokenRefresh(reason, attempt = 0, allowNoContext = false, requireVisible = true) {
     if (!settings.presetSwitchOptimizationEnabled) {
         return;
     }
 
     try {
+        if (requireVisible && !isPromptManagerTokenPanelVisible()) {
+            return;
+        }
+
         if (isPresetGenerationActive()) {
             return;
         }
@@ -10441,10 +10563,11 @@ async function runPromptManagerContextTokenRefresh(reason, attempt = 0, allowNoC
             state.reason = reason || state.reason || 'context change';
             state.attempt = attempt + 1;
             state.allowNoContext = Boolean(allowNoContext);
+            state.requireVisible = Boolean(requireVisible);
             clearTimeout(state.timer);
             state.timer = setTimeout(() => {
                 state.timer = null;
-                void runPromptManagerContextTokenRefresh(state.reason, state.attempt, state.allowNoContext);
+                void runPromptManagerContextTokenRefresh(state.reason, state.attempt, state.allowNoContext, state.requireVisible);
             }, PRESET_CONTEXT_TOKEN_REFRESH_RETRY_MS);
             return;
         }
@@ -10456,7 +10579,7 @@ async function runPromptManagerContextTokenRefresh(reason, attempt = 0, allowNoC
             return;
         }
 
-        await fastRefreshPromptManagerTokensAfterContextChange(reason || 'context change', { markPending: false });
+        await fastRefreshPromptManagerTokensAfterContextChange(reason || 'context change', { markPending: false, forceVisible: !requireVisible });
     } catch (error) {
         console.debug(`${LOG_PREFIX} Failed to fast-refresh prompt manager after ${reason}`, error);
     }
@@ -10570,9 +10693,13 @@ function normalizeOpenAITokenizerPromptManagerCount(rawCount, model) {
     return Math.max(0, count - (model === 'claude' ? 1 : 3));
 }
 
-async function fastRefreshPromptManagerTokensAfterContextChange(reason, { markPending = true } = {}) {
+async function fastRefreshPromptManagerTokensAfterContextChange(reason, { markPending = true, forceVisible = false } = {}) {
     try {
         if (!isPromptManagerReadyForFastPresetSwitch()) {
+            return;
+        }
+
+        if (!forceVisible && !isPromptManagerTokenPanelVisible()) {
             return;
         }
 
@@ -10580,7 +10707,10 @@ async function fastRefreshPromptManagerTokensAfterContextChange(reason, { markPe
         if (markPending) {
             markPromptManagerTokensPending();
         }
-        refreshPromptManagerTokensAfterPresetSwitchDebounced();
+        schedulePromptManagerTokenRefresh(reason || 'context change token refresh', {
+            delayMs: PROMPT_MANAGER_TOKEN_REFRESH_FAST_DELAY_MS,
+            forceVisible,
+        });
     } catch (error) {
         console.debug(`${LOG_PREFIX} Failed to fast-refresh prompt manager after ${reason}`, error);
     }
@@ -11376,7 +11506,9 @@ function copyPresetPromptGroupAssignment(sourcePromptId, copiedPromptId) {
 function refreshPresetPromptListAfterCopy() {
     if (isPresetVuePromptListManagerActive()) {
         syncPresetVuePromptListManagerState();
-        preparePromptManagerCustomDragList(getPromptManagerListElement());
+        preparePromptManagerCustomDragList(getPromptManagerListElement(), {
+            signature: getPresetVuePromptListManagerState().lastStructureSignature,
+        });
         return;
     }
 
@@ -11478,25 +11610,46 @@ function applyPromptManagerPresetFieldsEarly(preset) {
 async function renderPromptManagerListWithoutTokenStats() {
     const scrollContainer = promptManager.containerElement.closest('.scrollableInner');
     const scrollTop = scrollContainer?.scrollTop;
+    const renderCycle = (extensionState.presetPromptManagerFastRenderCycle ?? 0) + 1;
 
-    promptManager.error = null;
-    await promptManager.renderPromptManager();
-    await renderPromptManagerListItemsFast();
-    schedulePromptManagerDraggableInit();
+    extensionState.presetPromptManagerFastRenderCycle = renderCycle;
 
-    if (typeof scrollTop === 'number') {
-        scrollContainer?.scrollTo(0, scrollTop);
+    try {
+        promptManager.error = null;
+        await promptManager.renderPromptManager();
+        await renderPromptManagerListItemsFast({ skipVueSyncIfCurrentCycle: true });
+        schedulePromptManagerDraggableInit();
+
+        if (typeof scrollTop === 'number') {
+            scrollContainer?.scrollTo(0, scrollTop);
+        }
+
+        flushPromptManagerTokenRefreshIfPendingVisible('prompt manager rendered');
+    } finally {
+        if (extensionState.presetPromptManagerFastRenderCycle === renderCycle) {
+            extensionState.presetPromptManagerFastRenderCycle = 0;
+        }
     }
-
-    flushPromptManagerTokenRefreshIfPendingVisible('prompt manager rendered');
 }
 
-async function renderPromptManagerListItemsFast() {
+async function renderPromptManagerListItemsFast({ skipVueSyncIfCurrentCycle = false } = {}) {
     if (isPresetGroupingEnabled()) {
+        const manager = getPresetVuePromptListManagerState();
+
+        if (
+            skipVueSyncIfCurrentCycle
+            && manager.lastRenderPatchSyncCycle
+            && manager.lastRenderPatchSyncCycle === extensionState.presetPromptManagerFastRenderCycle
+            && isPresetVuePromptListManagerActive()
+        ) {
+            preparePromptManagerCustomDragList(getPromptManagerListElement(), { signature: manager.lastStructureSignature });
+            return;
+        }
+
         await installPresetVuePromptListManager();
 
         if (syncPresetVuePromptListManagerState()) {
-            preparePromptManagerCustomDragList(getPromptManagerListElement());
+            preparePromptManagerCustomDragList(getPromptManagerListElement(), { signature: manager.lastStructureSignature });
             return;
         }
     }
