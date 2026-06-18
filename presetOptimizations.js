@@ -120,6 +120,14 @@ const BAIBAOKU_TOKENIZER_BULK_COUNT_URL = '/api/plugins/baibaoku/v1/tokenizers/b
 const OPENAI_TOKENIZER_BULK_BRIDGE_KEY = '__baibaokuTokenizerBulkBridge';
 const OPENAI_TOKENIZER_BULK_CACHE_LIMIT = 5000;
 const OPENAI_TOKENIZER_BULK_AJAX_BATCH_DELAY_MS = 8;
+const OPENAI_TOKENIZER_BULK_PREPARE_CHUNK_SIZE = 80;
+const OPENAI_TOKENIZER_BULK_PREPARE_MAX_MESSAGES = 800;
+const OPENAI_TOKENIZER_BULK_FAILURE_THRESHOLD = 3;
+const OPENAI_TOKENIZER_BULK_CIRCUIT_BREAKER_MS = 45000;
+const PROMPT_MANAGER_TOKEN_REFRESH_QUEUE_KEY = '__baiBaiToolkitPromptManagerTokenRefreshQueue';
+const PROMPT_MANAGER_TOKEN_REFRESH_DEFAULT_DELAY_MS = 1000;
+const PROMPT_MANAGER_TOKEN_REFRESH_FAST_DELAY_MS = 250;
+const PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS = 1500;
 const PRESET_SAVE_URL = '/api/presets/save';
 const PRESET_BACKUP_SAVE_URL = '/api/plugins/baibaoku/v1/preset-backups/save';
 const PRESET_BACKUP_PREVIEW_LIST_URL = '/api/plugins/baibaoku/v1/preset-backups/save/list';
@@ -10301,14 +10309,14 @@ function applyPresetChatLoadedTokenRefreshOptimization() {
     register('groupSelected', 'group selected', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS, allowNoContext: true });
     register(event_types.CHARACTER_EDITED, 'character edited', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS });
     register(event_types.CHARACTER_DELETED, 'character deleted', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS });
-    register(event_types.MESSAGE_SENT, 'message sent');
-    register(event_types.MESSAGE_RECEIVED, 'message received', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS });
-    register(event_types.MESSAGE_EDITED, 'message edited', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS });
-    register(event_types.MESSAGE_UPDATED, 'message updated');
-    register(event_types.MESSAGE_DELETED, 'message deleted', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS });
-    register(event_types.MESSAGE_SWIPED, 'message swiped');
-    register(event_types.MESSAGE_SWIPE_DELETED, 'message swipe deleted');
-    register(event_types.GENERATION_ENDED, 'generation ended');
+    register(event_types.MESSAGE_SENT, 'message sent', { delayMs: PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS });
+    register(event_types.MESSAGE_RECEIVED, 'message received', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS, delayMs: PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS });
+    register(event_types.MESSAGE_EDITED, 'message edited', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS, delayMs: PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS });
+    register(event_types.MESSAGE_UPDATED, 'message updated', { delayMs: PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS });
+    register(event_types.MESSAGE_DELETED, 'message deleted', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS, delayMs: PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS });
+    register(event_types.MESSAGE_SWIPED, 'message swiped', { delayMs: PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS });
+    register(event_types.MESSAGE_SWIPE_DELETED, 'message swipe deleted', { delayMs: PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS });
+    register(event_types.GENERATION_ENDED, 'generation ended', { delayMs: PROMPT_MANAGER_TOKEN_REFRESH_FAST_DELAY_MS });
     register(event_types.WORLDINFO_SETTINGS_UPDATED, 'world info settings updated', { suppressMs: PRESET_CHAT_LOAD_RENDER_SUPPRESS_MS });
     register(event_types.WORLDINFO_UPDATED, 'world info updated');
     register(event_types.WORLDINFO_FORCE_ACTIVATE, 'world info force activate');
@@ -10464,7 +10472,7 @@ async function refreshPromptManagerTokensForMissingContext() {
         if (isPresetVuePromptListManagerActive()) {
             syncPresetVuePromptListManagerState();
         }
-        updatePromptManagerTokenDisplay();
+        schedulePromptManagerTokenDisplayUpdate();
     } catch (error) {
         console.debug(`${LOG_PREFIX} Failed to refresh prompt manager after leaving chat`, error);
     } finally {
@@ -10505,6 +10513,10 @@ async function refreshPromptManagerStaticTokensWithoutChatContext() {
         }));
 
     if (entries.length > 0) {
+        if (!isOpenAITokenizerBulkEnabled()) {
+            return false;
+        }
+
         const model = getTokenizerModel();
         const rawCounts = await getOpenAITokenizerBulkCountsUsingCache(model, entries);
         rawCounts.forEach((count, index) => {
@@ -11475,6 +11487,8 @@ async function renderPromptManagerListWithoutTokenStats() {
     if (typeof scrollTop === 'number') {
         scrollContainer?.scrollTo(0, scrollTop);
     }
+
+    flushPromptManagerTokenRefreshIfPendingVisible('prompt manager rendered');
 }
 
 async function renderPromptManagerListItemsFast() {
@@ -11960,7 +11974,15 @@ function updatePromptTokenCell(row, value) {
     }
 
     const displayValue = value ? String(value) : '-';
-    const warningSpan = tokenCell.querySelector('span') ?? document.createElement('span');
+    const existingWarning = tokenCell.querySelector('span');
+    if (tokenCell.dataset.pmTokens === displayValue
+        && tokenCell.textContent?.trim() === displayValue
+        && !existingWarning?.className
+        && !existingWarning?.title) {
+        return;
+    }
+
+    const warningSpan = existingWarning ?? document.createElement('span');
     warningSpan.className = '';
     warningSpan.title = '';
     warningSpan.textContent = ' ';
@@ -12087,10 +12109,130 @@ function appendIcon(container, className, title) {
     container.append(icon, document.createTextNode(' '));
 }
 
-const refreshPromptManagerTokensDebounced = debounce(refreshPromptManagerTokens, 1000);
-const refreshPromptManagerTokensAfterPresetSwitchDebounced = debounce(refreshPromptManagerTokens, 250);
+const refreshPromptManagerTokensDebounced = (reason = 'prompt manager token refresh') => {
+    schedulePromptManagerTokenRefresh(reason, { delayMs: PROMPT_MANAGER_TOKEN_REFRESH_DEFAULT_DELAY_MS });
+};
+const refreshPromptManagerTokensAfterPresetSwitchDebounced = (reason = 'prompt manager token refresh after preset switch') => {
+    schedulePromptManagerTokenRefresh(reason, { delayMs: PROMPT_MANAGER_TOKEN_REFRESH_FAST_DELAY_MS, forceVisible: true });
+};
 
-async function refreshPromptManagerTokens() {
+function getPromptManagerTokenRefreshQueueState() {
+    if (!extensionState[PROMPT_MANAGER_TOKEN_REFRESH_QUEUE_KEY] || typeof extensionState[PROMPT_MANAGER_TOKEN_REFRESH_QUEUE_KEY] !== 'object') {
+        extensionState[PROMPT_MANAGER_TOKEN_REFRESH_QUEUE_KEY] = {
+            timer: null,
+            reason: '',
+            inFlight: false,
+            pendingAfterFlight: false,
+            pendingWhileHidden: false,
+            lastSignature: '',
+            force: false,
+            forceVisible: false,
+            displayFrame: 0,
+            pendingFrame: 0,
+        };
+    }
+
+    return extensionState[PROMPT_MANAGER_TOKEN_REFRESH_QUEUE_KEY];
+}
+
+function schedulePromptManagerTokenRefresh(reason = 'prompt manager token refresh', {
+    delayMs = PROMPT_MANAGER_TOKEN_REFRESH_DEFAULT_DELAY_MS,
+    force = false,
+    forceVisible = false,
+} = {}) {
+    const state = getPromptManagerTokenRefreshQueueState();
+    state.reason = reason || state.reason || 'prompt manager token refresh';
+    state.force = Boolean(state.force || force);
+    state.forceVisible = Boolean(state.forceVisible || forceVisible);
+
+    if (!isPromptManagerTokenRefreshEnabled()) {
+        clearTimeout(state.timer);
+        state.timer = null;
+        return;
+    }
+
+    if (extensionState.promptManagerCustomDragState || isPresetVuePromptListDragging()) {
+        extensionState.promptManagerTokenRefreshPendingAfterDrag = true;
+        return;
+    }
+
+    if (isPresetGenerationActive()) {
+        clearTimeout(state.timer);
+        state.timer = setTimeout(() => {
+            state.timer = null;
+            schedulePromptManagerTokenRefresh(state.reason || reason, {
+                delayMs: PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS,
+                force: state.force,
+                forceVisible: state.forceVisible,
+            });
+        }, PROMPT_MANAGER_TOKEN_REFRESH_BUSY_DELAY_MS);
+        return;
+    }
+
+    if (state.inFlight) {
+        state.pendingAfterFlight = true;
+        return;
+    }
+
+    if (!state.forceVisible && !isPromptManagerTokenPanelVisible()) {
+        state.pendingWhileHidden = true;
+        return;
+    }
+
+    clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+        state.timer = null;
+        void runScheduledPromptManagerTokenRefresh();
+    }, Math.max(0, Number(delayMs) || 0));
+}
+
+function flushPromptManagerTokenRefreshIfPendingVisible(reason = 'prompt manager visible') {
+    const state = getPromptManagerTokenRefreshQueueState();
+    if (!state.pendingWhileHidden || !isPromptManagerTokenPanelVisible()) {
+        return;
+    }
+
+    state.pendingWhileHidden = false;
+    schedulePromptManagerTokenRefresh(reason, {
+        delayMs: PROMPT_MANAGER_TOKEN_REFRESH_FAST_DELAY_MS,
+        force: true,
+        forceVisible: true,
+    });
+}
+
+async function runScheduledPromptManagerTokenRefresh() {
+    const state = getPromptManagerTokenRefreshQueueState();
+    if (state.inFlight) {
+        state.pendingAfterFlight = true;
+        return;
+    }
+
+    state.inFlight = true;
+    state.pendingAfterFlight = false;
+
+    try {
+        await refreshPromptManagerTokens({
+            reason: state.reason,
+            force: state.force,
+            forceVisible: state.forceVisible,
+        });
+    } finally {
+        state.inFlight = false;
+        state.force = false;
+        state.forceVisible = false;
+
+        if (state.pendingAfterFlight) {
+            state.pendingAfterFlight = false;
+            schedulePromptManagerTokenRefresh(state.reason || 'pending prompt manager token refresh', {
+                delayMs: PROMPT_MANAGER_TOKEN_REFRESH_DEFAULT_DELAY_MS,
+                force: true,
+                forceVisible: true,
+            });
+        }
+    }
+}
+
+async function refreshPromptManagerTokens({ reason = 'prompt manager token refresh', force = false, forceVisible = false } = {}) {
     if (!isPromptManagerTokenRefreshEnabled()) {
         return;
     }
@@ -12104,6 +12246,11 @@ async function refreshPromptManagerTokens() {
         return;
     }
 
+    if (!forceVisible && !isPromptManagerTokenPanelVisible()) {
+        getPromptManagerTokenRefreshQueueState().pendingWhileHidden = true;
+        return;
+    }
+
     if (!hasPromptManagerTokenContext()) {
         await refreshPromptManagerTokensForMissingContext();
         return;
@@ -12111,12 +12258,22 @@ async function refreshPromptManagerTokens() {
 
     try {
         const contextRefreshState = getPresetContextTokenRefreshState();
+        const queueState = getPromptManagerTokenRefreshQueueState();
+        const signature = getPromptManagerTokenRefreshSignature();
+        if (!force && signature && signature === queueState.lastSignature && arePromptManagerTokenCountsComplete()) {
+            schedulePromptManagerTokenDisplayUpdate();
+            return;
+        }
+
         contextRefreshState.inFlight = true;
+        const startedAt = performance.now?.() ?? Date.now();
         await promptManager.tryGenerate();
+        queueState.lastSignature = getPromptManagerTokenRefreshSignature() || signature;
         if (isPresetVuePromptListManagerActive()) {
             syncPresetVuePromptListManagerState();
         }
-        updatePromptManagerTokenDisplay();
+        schedulePromptManagerTokenDisplayUpdate();
+        console.debug(`${LOG_PREFIX} Prompt manager token refresh completed after ${reason}: ${Math.round((performance.now?.() ?? Date.now()) - startedAt)}ms`);
     } catch (error) {
         console.debug(`${LOG_PREFIX} Failed to refresh prompt manager token counts`, error);
     } finally {
@@ -12124,6 +12281,110 @@ async function refreshPromptManagerTokens() {
         contextRefreshState.inFlight = false;
         contextRefreshState.suppressUntil = Date.now() + PRESET_CONTEXT_TOKEN_REFRESH_SELF_SUPPRESS_MS;
     }
+}
+
+function isPromptManagerTokenPanelVisible() {
+    const list = document.querySelector(PRESET_PROMPT_MANAGER_LIST_SELECTOR);
+    const container = promptManager?.containerElement;
+
+    if (!(list instanceof HTMLElement) || !(container instanceof HTMLElement)) {
+        return false;
+    }
+
+    if (!list.isConnected || !container.isConnected) {
+        return false;
+    }
+
+    const rect = container.getBoundingClientRect();
+    return Boolean(rect.width > 0 && rect.height > 0 && getComputedStyle(container).display !== 'none');
+}
+
+function getPromptManagerTokenRefreshSignature() {
+    try {
+        const serviceSettings = promptManager?.serviceSettings ?? oai_settings;
+        const prompts = Array.isArray(serviceSettings?.prompts) ? serviceSettings.prompts : [];
+        const promptOrder = Array.isArray(serviceSettings?.prompt_order)
+            ? serviceSettings.prompt_order
+            : promptManager?.getPromptOrderForCharacter?.(promptManager?.activeCharacter) ?? [];
+        const promptParts = prompts.map(prompt => [
+            prompt?.identifier || '',
+            prompt?.role || '',
+            prompt?.enabled === false ? 0 : 1,
+            prompt?.marker ? 1 : 0,
+            getStringHash(String(prompt?.content ?? '')),
+        ].join(':'));
+        const orderParts = promptOrder.map(entry => [
+            entry?.identifier || '',
+            entry?.enabled === false ? 0 : 1,
+        ].join(':'));
+        const chat = Array.isArray(scriptModule.chat) ? scriptModule.chat : [];
+        const lastMessage = chat[chat.length - 1];
+        const lastMessageSignature = lastMessage
+            ? [
+                chat.length,
+                lastMessage.send_date || '',
+                lastMessage.extra?.gen_id || '',
+                getStringHash(String(lastMessage.mes ?? lastMessage.content ?? '').slice(-512)),
+            ].join(':')
+            : `${chat.length}:`;
+
+        return [
+            getTokenizerModel(),
+            getCurrentChatId?.() || '',
+            serviceSettings?.preset_settings_openai || oai_settings?.preset_settings_openai || '',
+            serviceSettings?.openai_max_context ?? '',
+            serviceSettings?.openai_max_tokens ?? '',
+            promptParts.join('|'),
+            orderParts.join('|'),
+            lastMessageSignature,
+        ].join('||');
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} Failed to build prompt manager token refresh signature`, error);
+        return '';
+    }
+}
+
+function arePromptManagerTokenCountsComplete() {
+    const counts = promptManager?.tokenHandler?.getCounts?.();
+    const list = document.querySelector(PRESET_PROMPT_MANAGER_LIST_SELECTOR);
+
+    if (!counts || !list) {
+        return false;
+    }
+
+    const rows = Array.from(list.querySelectorAll('li.completion_prompt_manager_prompt[data-pm-identifier]'));
+    if (rows.length === 0) {
+        return false;
+    }
+
+    return rows.every(row => {
+        const identifier = row.dataset.pmIdentifier;
+        return identifier && Number.isFinite(Number(counts[identifier]));
+    });
+}
+
+function schedulePromptManagerTokenDisplayUpdate() {
+    const state = getPromptManagerTokenRefreshQueueState();
+    if (state.displayFrame) {
+        return;
+    }
+
+    state.displayFrame = requestAnimationFrame(() => {
+        state.displayFrame = 0;
+        updatePromptManagerTokenDisplay();
+    });
+}
+
+function schedulePromptManagerTokensPending() {
+    const state = getPromptManagerTokenRefreshQueueState();
+    if (state.pendingFrame) {
+        return;
+    }
+
+    state.pendingFrame = requestAnimationFrame(() => {
+        state.pendingFrame = 0;
+        markPromptManagerTokensPendingNow();
+    });
 }
 
 function handlePresetVuePromptRangeSelectionDelegatedClick(event, target) {
@@ -12178,8 +12439,31 @@ function getOpenAITokenizerBulkState() {
             state.stats[key] = 0;
         }
     }
+    if (typeof state.failureCount !== 'number') {
+        state.failureCount = 0;
+    }
+    if (typeof state.disabledUntil !== 'number') {
+        state.disabledUntil = 0;
+    }
 
     return state;
+}
+
+function isOpenAITokenizerBulkCircuitOpen(state = getOpenAITokenizerBulkState()) {
+    return Date.now() < Number(state.disabledUntil || 0);
+}
+
+function recordOpenAITokenizerBulkSuccess(state = getOpenAITokenizerBulkState()) {
+    state.failureCount = 0;
+    state.disabledUntil = 0;
+}
+
+function recordOpenAITokenizerBulkFailure(state = getOpenAITokenizerBulkState(), error = null) {
+    state.failureCount = Number(state.failureCount || 0) + 1;
+    if (state.failureCount >= OPENAI_TOKENIZER_BULK_FAILURE_THRESHOLD) {
+        state.disabledUntil = Date.now() + OPENAI_TOKENIZER_BULK_CIRCUIT_BREAKER_MS;
+        console.debug(`${LOG_PREFIX} OpenAI tokenizer bulk disabled temporarily after repeated failures`, error);
+    }
 }
 
 function installOpenAITokenizerBulkAjaxPatch() {
@@ -12410,12 +12694,18 @@ async function prepareOpenAITokenizerBulkMessages(context = {}) {
     }
 
     const model = getTokenizerModel();
-    const messages = collectOpenAITokenizerBulkMessages(context);
+    const messages = await collectOpenAITokenizerBulkMessages(context);
     const uniqueMessages = [];
     const seen = new Set();
+    const keyCache = new Map();
 
-    for (const message of messages) {
-        const key = getOpenAITokenizerCacheKey(model, message);
+    for (let index = 0; index < messages.length; index += 1) {
+        if (index > 0 && index % OPENAI_TOKENIZER_BULK_PREPARE_CHUNK_SIZE === 0) {
+            await waitForNextPaint();
+        }
+
+        const message = messages[index];
+        const key = getOpenAITokenizerCacheKey(model, message, keyCache);
         if (seen.has(key) || state.cache.has(key)) {
             continue;
         }
@@ -12451,37 +12741,51 @@ async function prepareOpenAITokenizerBulkMessages(context = {}) {
     return pending;
 }
 
-function collectOpenAITokenizerBulkMessages(context) {
+async function collectOpenAITokenizerBulkMessages(context) {
     const entries = [];
-    const add = (message, options = {}) => {
+    let processed = 0;
+    const add = async (message, options = {}) => {
+        if (entries.length >= OPENAI_TOKENIZER_BULK_PREPARE_MAX_MESSAGES) {
+            return false;
+        }
+
         const normalized = normalizeOpenAITokenizerMessage(message, options);
         if (normalized) {
             entries.push(normalized);
         }
+
+        processed += 1;
+        if (processed % OPENAI_TOKENIZER_BULK_PREPARE_CHUNK_SIZE === 0) {
+            await waitForNextPaint();
+        }
+
+        return entries.length < OPENAI_TOKENIZER_BULK_PREPARE_MAX_MESSAGES;
     };
 
-    add({ role: 'system', content: context.newChatContent });
-    add({ role: 'user', content: context.sendIfEmpty });
-    add({ role: 'system', content: context.newExampleChatContent });
+    await add({ role: 'system', content: context.newChatContent });
+    await add({ role: 'user', content: context.sendIfEmpty });
+    await add({ role: 'system', content: context.newExampleChatContent });
 
-    collectPromptCollectionTokenMessages(context.prompts, add);
-    collectChatHistoryTokenMessages(context, add);
-    collectDialogueExampleTokenMessages(context.messageExamples, add);
+    await collectPromptCollectionTokenMessages(context.prompts, add);
+    await collectChatHistoryTokenMessages(context, add);
+    await collectDialogueExampleTokenMessages(context.messageExamples, add);
 
     return entries;
 }
 
-function collectPromptCollectionTokenMessages(prompts, add) {
+async function collectPromptCollectionTokenMessages(prompts, add) {
     const collection = Array.isArray(prompts?.collection) ? prompts.collection : [];
     for (const prompt of collection) {
-        add({
+        if (!await add({
             role: prompt?.role || 'system',
             content: prompt?.content,
-        });
+        })) {
+            return;
+        }
     }
 }
 
-function collectChatHistoryTokenMessages(context, add) {
+async function collectChatHistoryTokenMessages(context, add) {
     const sourceMessages = Array.isArray(context.messages) ? context.messages : [];
     const namesInCompletion = Number(context.oaiSettings?.names_behavior) === 1;
     const manager = context.promptManager || promptManager;
@@ -12502,7 +12806,9 @@ function collectChatHistoryTokenMessages(context, add) {
             content: prepared?.content ?? source.content,
         };
 
-        add(message);
+        if (!await add(message)) {
+            return;
+        }
 
         if (namesInCompletion && source.name) {
             const name = typeof manager?.isValidName === 'function' && manager.isValidName(source.name)
@@ -12510,18 +12816,22 @@ function collectChatHistoryTokenMessages(context, add) {
                 : typeof manager?.sanitizeName === 'function'
                     ? manager.sanitizeName(source.name)
                     : source.name;
-            add({ ...message, name });
+            if (!await add({ ...message, name })) {
+                return;
+            }
         }
 
         if (Array.isArray(source.invocations)) {
             for (const invocation of source.invocations) {
-                add({ role: 'tool', content: invocation?.result || '[No content]' });
+                if (!await add({ role: 'tool', content: invocation?.result || '[No content]' })) {
+                    return;
+                }
             }
         }
     }
 }
 
-function collectDialogueExampleTokenMessages(messageExamples, add) {
+async function collectDialogueExampleTokenMessages(messageExamples, add) {
     if (!Array.isArray(messageExamples)) {
         return;
     }
@@ -12536,9 +12846,13 @@ function collectDialogueExampleTokenMessages(messageExamples, add) {
                 role: 'system',
                 content: prompt?.content || '',
             };
-            add(message);
+            if (!await add(message)) {
+                return;
+            }
             if (prompt?.name) {
-                add({ ...message, name: prompt.name });
+                if (!await add({ ...message, name: prompt.name })) {
+                    return;
+                }
             }
         }
     }
@@ -12591,26 +12905,37 @@ function normalizeOpenAITokenizerMessage(message, { allowEmptyContent = false } 
 }
 
 async function fetchOpenAITokenizerBulkCounts(model, entries) {
+    const state = getOpenAITokenizerBulkState();
+    if (isOpenAITokenizerBulkCircuitOpen(state)) {
+        throw new Error('BaiBaoKu bulk count is temporarily disabled after repeated failures');
+    }
+
     const headers = new Headers(getRequestHeaders());
     headers.set('content-type', 'application/json');
 
-    const response = await fetch(BAIBAOKU_TOKENIZER_BULK_COUNT_URL, {
-        method: 'POST',
-        headers,
-        cache: 'no-store',
-        body: JSON.stringify({
-            model,
-            messages: entries.map(entry => entry.message),
-        }),
-    });
-    const payload = await response.json().catch(() => null);
-    const counts = payload?.data?.counts;
+    try {
+        const response = await fetch(BAIBAOKU_TOKENIZER_BULK_COUNT_URL, {
+            method: 'POST',
+            headers,
+            cache: 'no-store',
+            body: JSON.stringify({
+                model,
+                messages: entries.map(entry => entry.message),
+            }),
+        });
+        const payload = await response.json().catch(() => null);
+        const counts = payload?.data?.counts;
 
-    if (!response.ok || payload?.ok !== true || !Array.isArray(counts) || counts.length !== entries.length) {
-        throw new Error(payload?.error?.message || `BaiBaoKu bulk count failed: HTTP ${response.status}`);
+        if (!response.ok || payload?.ok !== true || !Array.isArray(counts) || counts.length !== entries.length) {
+            throw new Error(payload?.error?.message || `BaiBaoKu bulk count failed: HTTP ${response.status}`);
+        }
+
+        recordOpenAITokenizerBulkSuccess(state);
+        return counts.map(count => Number(count));
+    } catch (error) {
+        recordOpenAITokenizerBulkFailure(state, error);
+        throw error;
     }
-
-    return counts.map(count => Number(count));
 }
 
 function setOpenAITokenizerBulkCache(key, count) {
@@ -12627,12 +12952,25 @@ function setOpenAITokenizerBulkCache(key, count) {
     }
 }
 
-function getOpenAITokenizerCacheKey(model, message) {
-    return `${model}-${getStringHash(JSON.stringify(message))}`;
+function getOpenAITokenizerCacheKey(model, message, roundCache = null) {
+    const serialized = JSON.stringify(message);
+    const cacheKey = `${model}:${serialized}`;
+
+    if (roundCache instanceof Map && roundCache.has(cacheKey)) {
+        return roundCache.get(cacheKey);
+    }
+
+    const key = `${model}-${getStringHash(serialized)}`;
+    roundCache?.set?.(cacheKey, key);
+    return key;
 }
 
 function isOpenAITokenizerBulkEnabled() {
     if (settings.tokenizerBulkCountEnabled === false) {
+        return false;
+    }
+
+    if (isOpenAITokenizerBulkCircuitOpen()) {
         return false;
     }
 
@@ -12676,6 +13014,10 @@ function isPromptManagerTokenRefreshEnabled() {
 }
 
 function markPromptManagerTokensPending() {
+    schedulePromptManagerTokensPending();
+}
+
+function markPromptManagerTokensPendingNow() {
     const list = document.querySelector(PRESET_PROMPT_MANAGER_LIST_SELECTOR);
 
     if (!list) {
@@ -12691,7 +13033,10 @@ function markPromptManagerTokensPending() {
     const totalLabel = totalContainer?.querySelector('span');
 
     if (totalContainer && totalLabel) {
-        totalContainer.replaceChildren(totalLabel, document.createTextNode(' - '));
+        const nextText = ' - ';
+        if (totalContainer.textContent?.replace(totalLabel.textContent || '', '') !== nextText) {
+            totalContainer.replaceChildren(totalLabel, document.createTextNode(nextText));
+        }
     }
 }
 
@@ -12712,7 +13057,10 @@ function updatePromptManagerTokenDisplay() {
     const totalLabel = totalContainer?.querySelector('span');
 
     if (totalContainer && totalLabel) {
-        totalContainer.replaceChildren(totalLabel, document.createTextNode(` ${promptManager.tokenUsage ?? 0} `));
+        const nextText = ` ${promptManager.tokenUsage ?? 0} `;
+        if (totalContainer.textContent?.replace(totalLabel.textContent || '', '') !== nextText) {
+            totalContainer.replaceChildren(totalLabel, document.createTextNode(nextText));
+        }
     }
 }
 
