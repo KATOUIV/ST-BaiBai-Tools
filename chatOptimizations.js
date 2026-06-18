@@ -57,6 +57,8 @@ const CHAT_DELETE_EDIT_WINDOW_MS = 5000;
 const MOBILE_AUTO_KEYBOARD_DIRECT_FOCUS_WINDOW_MS = 1500;
 const MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_TOLERANCE = 2;
 const MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_DELAYS = [0, 50, 160];
+const MOBILE_MESSAGE_EDIT_CARET_VISIBLE_PADDING = 24;
+const MOBILE_MESSAGE_EDIT_CARET_CONTEXT_LINES = 2;
 const CHAT_GENERATION_ACTION_SELECTOR = '#send_but, #option_regenerate, #option_continue, #option_impersonate, #mes_continue, #mes_impersonate';
 const CHAT_MESSAGE_EDIT_SELECTOR = '#chat .mes_edit';
 const WELCOME_PANEL_SELECTOR = '#chat .welcomePanel';
@@ -2260,14 +2262,13 @@ function applyMobileAutoKeyboardSuppression() {
 
 function applyMobileMessageEditScrollGuard() {
     if (!isMobileMessageEditScrollGuardEnabled()) {
-        stopMobileMessageEditScrollGuard();
+        stopMobileMessageEditScrollGuard({ removeEntryObservers: true });
         return;
     }
 
     patchMobileMessageEditChatScrollTop();
     installMobileMessageEditScrollGuardObservers();
-    ensureMobileMessageEditChatResizeObserver();
-    captureMobileMessageEditScrollGuard('apply');
+    scheduleMobileMessageEditScrollGuardUpdate('apply');
 }
 
 function applyWelcomeRecentChatDirectOpenOptimization() {
@@ -2482,43 +2483,143 @@ function shouldBlockMobileMessageEditChatScrollTop(element, value) {
 
 function installMobileMessageEditScrollGuardObservers() {
     if (extensionState.mobileMessageEditScrollGuardObserversInstalled) {
-        return;
+        if (extensionState.mobileMessageEditScrollGuardEntryHandler) {
+            return;
+        }
+        stopMobileMessageEditScrollGuard({ removeEntryObservers: true });
     }
 
-    const updateHandler = () => {
-        scheduleMobileMessageEditScrollGuardUpdate();
+    const entryHandler = (event) => {
+        handleMobileMessageEditScrollGuardEntryEvent(event);
     };
-    const resizeHandler = () => {
-        handleMobileMessageEditViewportResize();
+    const focusInHandler = (event) => {
+        handleMobileMessageEditScrollGuardFocusIn(event);
     };
-    const userScrollIntentHandler = () => {
-        handleMobileMessageEditUserScrollIntent();
+    const focusOutHandler = () => {
+        scheduleMobileMessageEditScrollGuardUpdate('focusout', 0);
+        scheduleMobileMessageEditScrollGuardUpdate('focusout settle', 80);
     };
-    const mutationObserver = new MutationObserver(updateHandler);
 
-    mutationObserver.observe(document.body, {
-        childList: true,
-        subtree: true,
-    });
+    document.addEventListener('pointerdown', entryHandler, true);
+    document.addEventListener('mousedown', entryHandler, true);
+    document.addEventListener('touchstart', entryHandler, { capture: true, passive: true });
+    document.addEventListener('click', entryHandler, true);
+    document.addEventListener('focusin', focusInHandler, true);
+    document.addEventListener('focusout', focusOutHandler, true);
 
-    document.addEventListener('focusin', updateHandler, true);
-    document.addEventListener('focusout', updateHandler, true);
-    document.addEventListener('touchmove', userScrollIntentHandler, { capture: true, passive: true });
-    document.addEventListener('wheel', userScrollIntentHandler, { capture: true, passive: true });
-    window.addEventListener('resize', resizeHandler, true);
-    window.visualViewport?.addEventListener('resize', resizeHandler, true);
-
-    extensionState.mobileMessageEditScrollGuardMutationObserver = mutationObserver;
-    extensionState.mobileMessageEditScrollGuardUpdateHandler = updateHandler;
-    extensionState.mobileMessageEditScrollGuardResizeHandler = resizeHandler;
-    extensionState.mobileMessageEditScrollGuardUserScrollIntentHandler = userScrollIntentHandler;
+    extensionState.mobileMessageEditScrollGuardEntryHandler = entryHandler;
+    extensionState.mobileMessageEditScrollGuardFocusInHandler = focusInHandler;
+    extensionState.mobileMessageEditScrollGuardFocusOutHandler = focusOutHandler;
     extensionState.mobileMessageEditScrollGuardObserversInstalled = true;
 }
 
-function ensureMobileMessageEditChatResizeObserver() {
-    const chat = document.querySelector('#chat');
+function removeMobileMessageEditScrollGuardObservers() {
+    if (!extensionState.mobileMessageEditScrollGuardObserversInstalled) {
+        return;
+    }
 
-    if (!(chat instanceof HTMLElement) || typeof ResizeObserver !== 'function') {
+    const entryHandler = extensionState.mobileMessageEditScrollGuardEntryHandler;
+    const focusInHandler = extensionState.mobileMessageEditScrollGuardFocusInHandler;
+    const focusOutHandler = extensionState.mobileMessageEditScrollGuardFocusOutHandler;
+    const legacyUpdateHandler = extensionState.mobileMessageEditScrollGuardUpdateHandler;
+    const legacyResizeHandler = extensionState.mobileMessageEditScrollGuardResizeHandler;
+    const legacyUserScrollIntentHandler = extensionState.mobileMessageEditScrollGuardUserScrollIntentHandler;
+
+    if (entryHandler) {
+        document.removeEventListener('pointerdown', entryHandler, true);
+        document.removeEventListener('mousedown', entryHandler, true);
+        document.removeEventListener('touchstart', entryHandler, true);
+        document.removeEventListener('click', entryHandler, true);
+    }
+    if (focusInHandler) {
+        document.removeEventListener('focusin', focusInHandler, true);
+    }
+    if (focusOutHandler) {
+        document.removeEventListener('focusout', focusOutHandler, true);
+    }
+    if (legacyUpdateHandler) {
+        document.removeEventListener('focusin', legacyUpdateHandler, true);
+        document.removeEventListener('focusout', legacyUpdateHandler, true);
+    }
+    if (legacyUserScrollIntentHandler) {
+        document.removeEventListener('touchmove', legacyUserScrollIntentHandler, true);
+        document.removeEventListener('wheel', legacyUserScrollIntentHandler, true);
+    }
+    if (legacyResizeHandler) {
+        window.removeEventListener('resize', legacyResizeHandler, true);
+        window.visualViewport?.removeEventListener('resize', legacyResizeHandler, true);
+    }
+
+    extensionState.mobileMessageEditScrollGuardMutationObserver?.disconnect();
+    extensionState.mobileMessageEditScrollGuardMutationObserver = null;
+    extensionState.mobileMessageEditScrollGuardMutationElement = null;
+    extensionState.mobileMessageEditScrollGuardResizeObserver?.disconnect();
+    extensionState.mobileMessageEditScrollGuardResizeObserver = null;
+    extensionState.mobileMessageEditScrollGuardResizeElement = null;
+
+    if (extensionState.mobileMessageEditScrollGuardUpdateFrame) {
+        cancelAnimationFrame(extensionState.mobileMessageEditScrollGuardUpdateFrame);
+        extensionState.mobileMessageEditScrollGuardUpdateFrame = 0;
+    }
+    clearTimeout(extensionState.mobileMessageEditScrollGuardUpdateTimer);
+    extensionState.mobileMessageEditScrollGuardUpdateTimer = null;
+
+    delete extensionState.mobileMessageEditScrollGuardEntryHandler;
+    delete extensionState.mobileMessageEditScrollGuardFocusInHandler;
+    delete extensionState.mobileMessageEditScrollGuardFocusOutHandler;
+    delete extensionState.mobileMessageEditScrollGuardUpdateHandler;
+    extensionState.mobileMessageEditScrollGuardResizeHandler = null;
+    extensionState.mobileMessageEditScrollGuardUserScrollIntentHandler = null;
+    extensionState.mobileMessageEditScrollGuardActiveListenersInstalled = false;
+    extensionState.mobileMessageEditScrollGuardObserversInstalled = false;
+}
+
+function handleMobileMessageEditScrollGuardEntryEvent(event) {
+    if (!isMobileMessageEditScrollGuardEnabled()) {
+        return;
+    }
+
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) {
+        return;
+    }
+
+    const editor = target.closest(MOBILE_MESSAGE_EDIT_SELECTOR);
+    if (editor instanceof HTMLElement) {
+        captureMobileMessageEditScrollGuard('edit interaction', editor, { force: true });
+        return;
+    }
+
+    if (target.closest(CHAT_MESSAGE_EDIT_SELECTOR)) {
+        scheduleMobileMessageEditScrollGuardUpdate('edit button');
+        scheduleMobileMessageEditScrollGuardUpdate('edit button settle', 80);
+    }
+}
+
+function handleMobileMessageEditScrollGuardFocusIn(event) {
+    const target = event.target;
+
+    if (isMobileMessageEditScrollGuardEnabled()
+        && target instanceof HTMLElement
+        && target.matches(MOBILE_MESSAGE_EDIT_SELECTOR)) {
+        captureMobileMessageEditScrollGuard('edit focusin', target, { force: true });
+        return;
+    }
+
+    scheduleMobileMessageEditScrollGuardUpdate('focusin');
+}
+
+function ensureMobileMessageEditScrollGuardActiveObservers(guard = getActiveMobileMessageEditScrollGuard()) {
+    const chat = guard?.chat;
+
+    if (!(chat instanceof HTMLElement)) {
+        return;
+    }
+
+    ensureMobileMessageEditScrollGuardMutationObserver(chat);
+    ensureMobileMessageEditScrollGuardActiveListeners();
+
+    if (typeof ResizeObserver !== 'function') {
         return;
     }
 
@@ -2528,8 +2629,9 @@ function ensureMobileMessageEditChatResizeObserver() {
 
     extensionState.mobileMessageEditScrollGuardResizeObserver?.disconnect();
 
-    const resizeObserver = new ResizeObserver(() => {
-        handleMobileMessageEditChatResize();
+    const resizeObserver = new ResizeObserver((entries) => {
+        const entry = entries.find(value => value.target === chat) || entries[0];
+        handleMobileMessageEditChatResize(entry?.contentRect?.height);
     });
 
     resizeObserver.observe(chat);
@@ -2537,16 +2639,112 @@ function ensureMobileMessageEditChatResizeObserver() {
     extensionState.mobileMessageEditScrollGuardResizeElement = chat;
 }
 
-function scheduleMobileMessageEditScrollGuardUpdate() {
+function ensureMobileMessageEditScrollGuardMutationObserver(chat) {
+    if (!(chat instanceof HTMLElement) || typeof MutationObserver !== 'function') {
+        return;
+    }
+
+    if (extensionState.mobileMessageEditScrollGuardMutationElement === chat) {
+        return;
+    }
+
+    extensionState.mobileMessageEditScrollGuardMutationObserver?.disconnect();
+
+    const mutationObserver = new MutationObserver(() => {
+        scheduleMobileMessageEditScrollGuardUpdate('chat mutation');
+    });
+
+    mutationObserver.observe(chat, {
+        childList: true,
+        subtree: true,
+    });
+
+    extensionState.mobileMessageEditScrollGuardMutationObserver = mutationObserver;
+    extensionState.mobileMessageEditScrollGuardMutationElement = chat;
+}
+
+function ensureMobileMessageEditScrollGuardActiveListeners() {
+    if (extensionState.mobileMessageEditScrollGuardActiveListenersInstalled) {
+        return;
+    }
+
+    const resizeHandler = () => {
+        handleMobileMessageEditViewportResize();
+    };
+    const userScrollIntentHandler = () => {
+        handleMobileMessageEditUserScrollIntent();
+    };
+
+    document.addEventListener('touchmove', userScrollIntentHandler, { capture: true, passive: true });
+    document.addEventListener('wheel', userScrollIntentHandler, { capture: true, passive: true });
+    window.addEventListener('resize', resizeHandler, true);
+    window.visualViewport?.addEventListener('resize', resizeHandler, true);
+
+    extensionState.mobileMessageEditScrollGuardResizeHandler = resizeHandler;
+    extensionState.mobileMessageEditScrollGuardUserScrollIntentHandler = userScrollIntentHandler;
+    extensionState.mobileMessageEditScrollGuardActiveListenersInstalled = true;
+}
+
+function stopMobileMessageEditScrollGuardActiveObservers() {
+    extensionState.mobileMessageEditScrollGuardMutationObserver?.disconnect();
+    extensionState.mobileMessageEditScrollGuardMutationObserver = null;
+    extensionState.mobileMessageEditScrollGuardMutationElement = null;
+
+    extensionState.mobileMessageEditScrollGuardResizeObserver?.disconnect();
+    extensionState.mobileMessageEditScrollGuardResizeObserver = null;
+    extensionState.mobileMessageEditScrollGuardResizeElement = null;
+
+    const resizeHandler = extensionState.mobileMessageEditScrollGuardResizeHandler;
+    const userScrollIntentHandler = extensionState.mobileMessageEditScrollGuardUserScrollIntentHandler;
+
+    if (userScrollIntentHandler) {
+        document.removeEventListener('touchmove', userScrollIntentHandler, true);
+        document.removeEventListener('wheel', userScrollIntentHandler, true);
+    }
+    if (resizeHandler) {
+        window.removeEventListener('resize', resizeHandler, true);
+        window.visualViewport?.removeEventListener('resize', resizeHandler, true);
+    }
+
+    extensionState.mobileMessageEditScrollGuardResizeHandler = null;
+    extensionState.mobileMessageEditScrollGuardUserScrollIntentHandler = null;
+    extensionState.mobileMessageEditScrollGuardActiveListenersInstalled = false;
+}
+
+function scheduleMobileMessageEditScrollGuardUpdate(reason = '', delayMs = 0) {
+    if (!isMobileMessageEditScrollGuardEnabled()) {
+        stopMobileMessageEditScrollGuard();
+        return;
+    }
+
+    if (delayMs > 0) {
+        clearTimeout(extensionState.mobileMessageEditScrollGuardUpdateTimer);
+        extensionState.mobileMessageEditScrollGuardUpdateTimer = setTimeout(() => {
+            extensionState.mobileMessageEditScrollGuardUpdateTimer = null;
+            scheduleMobileMessageEditScrollGuardUpdate(reason);
+        }, delayMs);
+        return;
+    }
+
     if (extensionState.mobileMessageEditScrollGuardUpdateFrame) {
         return;
     }
 
     extensionState.mobileMessageEditScrollGuardUpdateFrame = requestAnimationFrame(() => {
         extensionState.mobileMessageEditScrollGuardUpdateFrame = 0;
-        ensureMobileMessageEditChatResizeObserver();
-        captureMobileMessageEditScrollGuard('scheduled update');
+        refreshMobileMessageEditScrollGuard(reason || 'scheduled update');
     });
+}
+
+function refreshMobileMessageEditScrollGuard(reason = '') {
+    const targetEditor = document.querySelector(MOBILE_MESSAGE_EDIT_SELECTOR);
+
+    if (targetEditor instanceof HTMLElement) {
+        captureMobileMessageEditScrollGuard(reason || 'refresh', targetEditor);
+        return;
+    }
+
+    stopMobileMessageEditScrollGuard();
 }
 
 function captureMobileMessageEditScrollGuard(reason, editor = null, { force = false } = {}) {
@@ -2572,9 +2770,11 @@ function captureMobileMessageEditScrollGuard(reason, editor = null, { force = fa
         && existingGuard?.editor === targetEditor
         && existingGuard?.chat === chat
     ) {
+        ensureMobileMessageEditScrollGuardActiveObservers(existingGuard);
         return;
     }
 
+    clearMobileMessageEditScrollRestoreTimers(existingGuard);
     extensionState.mobileMessageEditScrollGuard = {
         editor: targetEditor,
         chat,
@@ -2583,29 +2783,57 @@ function captureMobileMessageEditScrollGuard(reason, editor = null, { force = fa
         capturedAt: Date.now(),
         reason,
         restoreTimers: [],
+        restoreScheduled: false,
+        restoreReason: '',
+        caretVisibleTimers: [],
+        caretVisibleCheckScheduled: false,
         userScrollIntentUntil: 0,
     };
+    ensureMobileMessageEditScrollGuardActiveObservers(extensionState.mobileMessageEditScrollGuard);
+    scheduleMobileMessageEditCaretVisibleCheck(extensionState.mobileMessageEditScrollGuard);
 }
 
-function stopMobileMessageEditScrollGuard() {
+function stopMobileMessageEditScrollGuard({ removeEntryObservers = false } = {}) {
     const guard = extensionState.mobileMessageEditScrollGuard;
+    clearMobileMessageEditScrollRestoreTimers(guard);
 
-    if (guard?.restoreTimers?.length) {
-        guard.restoreTimers.forEach(timer => clearTimeout(timer));
-    }
+    stopMobileMessageEditScrollGuardActiveObservers();
 
     extensionState.mobileMessageEditScrollGuard = null;
+
+    if (removeEntryObservers) {
+        removeMobileMessageEditScrollGuardObservers();
+    }
 }
 
-function handleMobileMessageEditChatResize() {
+function clearMobileMessageEditScrollRestoreTimers(guard = extensionState.mobileMessageEditScrollGuard) {
+    if (guard?.restoreTimers?.length) {
+        guard.restoreTimers.forEach(timer => clearTimeout(timer));
+        guard.restoreTimers = [];
+    }
+    if (guard?.caretVisibleTimers?.length) {
+        guard.caretVisibleTimers.forEach(timer => clearTimeout(timer));
+        guard.caretVisibleTimers = [];
+    }
+    if (guard) {
+        guard.restoreScheduled = false;
+        guard.restoreReason = '';
+        guard.caretVisibleCheckScheduled = false;
+    }
+}
+
+function handleMobileMessageEditChatResize(observedHeight = null) {
     const guard = getActiveMobileMessageEditScrollGuard();
 
     if (!guard) {
-        captureMobileMessageEditScrollGuard('chat resize without guard');
+        scheduleMobileMessageEditScrollGuardUpdate('chat resize without guard');
         return;
     }
 
-    const nextHeight = guard.chat.offsetHeight;
+    const numericHeight = Number(observedHeight);
+    const nextHeight = Number.isFinite(numericHeight)
+        ? numericHeight
+        : guard.chat.offsetHeight;
     const heightDelta = nextHeight - Number(guard.chatHeight || 0);
     guard.chatHeight = nextHeight;
 
@@ -2643,13 +2871,25 @@ function scheduleMobileMessageEditScrollRestore(reason) {
         return;
     }
 
-    queueMicrotask(() => restoreMobileMessageEditScroll(reason));
-    requestAnimationFrame(() => restoreMobileMessageEditScroll(reason));
+    guard.restoreReason = reason || guard.restoreReason || 'restore';
+
+    if (guard.restoreScheduled) {
+        return;
+    }
+
+    guard.restoreScheduled = true;
+
+    queueMicrotask(() => restoreMobileMessageEditScroll(guard.restoreReason));
+    requestAnimationFrame(() => restoreMobileMessageEditScroll(guard.restoreReason));
 
     for (const delay of MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_DELAYS) {
         const timer = setTimeout(() => {
             guard.restoreTimers = guard.restoreTimers.filter(value => value !== timer);
-            restoreMobileMessageEditScroll(reason);
+            restoreMobileMessageEditScroll(guard.restoreReason);
+            if (guard.restoreTimers.length === 0) {
+                guard.restoreScheduled = false;
+                guard.restoreReason = '';
+            }
         }, delay);
 
         guard.restoreTimers.push(timer);
@@ -2666,29 +2906,193 @@ function restoreMobileMessageEditScroll(reason) {
     const desiredScrollTop = Number(guard.scrollTop || 0);
 
     if (Math.abs(guard.chat.scrollTop - desiredScrollTop) <= MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_TOLERANCE) {
+        ensureMobileMessageEditCaretVisible(guard.editor);
         return;
     }
 
     try {
         extensionState.mobileMessageEditScrollRestoreActive = true;
         guard.chat.scrollTop = desiredScrollTop;
+        ensureMobileMessageEditCaretVisible(guard.editor);
         console.debug(`${LOG_PREFIX} Restored message edit chat scroll after ${reason}: ${desiredScrollTop}`);
     } finally {
         extensionState.mobileMessageEditScrollRestoreActive = false;
     }
 }
 
+function scheduleMobileMessageEditCaretVisibleCheck(guard = getActiveMobileMessageEditScrollGuard()) {
+    if (!guard) {
+        return;
+    }
+
+    if (guard.caretVisibleCheckScheduled) {
+        return;
+    }
+
+    guard.caretVisibleCheckScheduled = true;
+
+    requestAnimationFrame(() => {
+        if (extensionState.mobileMessageEditScrollGuard === guard) {
+            ensureMobileMessageEditCaretVisible(guard.editor);
+        }
+    });
+
+    for (const delay of MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_DELAYS) {
+        const timer = setTimeout(() => {
+            if (extensionState.mobileMessageEditScrollGuard === guard) {
+                ensureMobileMessageEditCaretVisible(guard.editor);
+            }
+            guard.caretVisibleTimers = guard.caretVisibleTimers.filter(value => value !== timer);
+            if (guard.caretVisibleTimers.length === 0) {
+                guard.caretVisibleCheckScheduled = false;
+            }
+        }, delay);
+
+        guard.caretVisibleTimers.push(timer);
+    }
+}
+
+function ensureMobileMessageEditCaretVisible(editor) {
+    if (!(editor instanceof HTMLTextAreaElement)
+        || !editor.isConnected
+        || editor.scrollHeight <= editor.clientHeight
+        || typeof editor.selectionStart !== 'number') {
+        return;
+    }
+
+    const caretOffset = Math.max(0, Math.min(editor.selectionStart, editor.value.length));
+    const caretTop = getTextareaCaretContentTop(editor, caretOffset);
+
+    if (!Number.isFinite(caretTop)) {
+        scrollMessageEditTextareaCaretApproximatelyIntoView(editor, caretOffset);
+        return;
+    }
+
+    const style = getComputedStyle(editor);
+    const lineHeight = getTextareaNumericLineHeight(style);
+    const padding = MOBILE_MESSAGE_EDIT_CARET_VISIBLE_PADDING;
+    const bottomContext = padding + (lineHeight * MOBILE_MESSAGE_EDIT_CARET_CONTEXT_LINES);
+    const visibleTop = editor.scrollTop + padding;
+    const visibleBottom = editor.scrollTop + editor.clientHeight - bottomContext;
+    const caretBottom = caretTop + lineHeight;
+
+    if (caretTop < visibleTop) {
+        editor.scrollTop = Math.max(0, caretTop - padding);
+    } else if (caretBottom > visibleBottom) {
+        editor.scrollTop = Math.min(
+            editor.scrollHeight - editor.clientHeight,
+            caretBottom - editor.clientHeight + bottomContext,
+        );
+    }
+}
+
+function getTextareaCaretContentTop(editor, caretOffset) {
+    const marker = document.createElement('span');
+    marker.textContent = '\u200b';
+
+    const mirror = document.createElement('div');
+    const style = getComputedStyle(editor);
+    const properties = [
+        'boxSizing',
+        'width',
+        'fontFamily',
+        'fontSize',
+        'fontWeight',
+        'fontStyle',
+        'fontVariant',
+        'fontStretch',
+        'lineHeight',
+        'letterSpacing',
+        'textTransform',
+        'textIndent',
+        'textAlign',
+        'textRendering',
+        'textSizeAdjust',
+        'tabSize',
+        'paddingTop',
+        'paddingRight',
+        'paddingBottom',
+        'paddingLeft',
+        'borderTopWidth',
+        'borderRightWidth',
+        'borderBottomWidth',
+        'borderLeftWidth',
+    ];
+
+    for (const property of properties) {
+        mirror.style[property] = style[property];
+    }
+
+    mirror.style.position = 'absolute';
+    mirror.style.visibility = 'hidden';
+    mirror.style.pointerEvents = 'none';
+    mirror.style.whiteSpace = 'pre-wrap';
+    mirror.style.overflowWrap = 'break-word';
+    mirror.style.wordWrap = 'break-word';
+    mirror.style.overflow = 'hidden';
+    mirror.style.top = '0';
+    mirror.style.left = '-9999px';
+    mirror.style.height = 'auto';
+    mirror.style.minHeight = '0';
+    mirror.style.maxHeight = 'none';
+    mirror.style.width = `${editor.offsetWidth}px`;
+
+    const before = editor.value.slice(0, caretOffset);
+    mirror.append(document.createTextNode(before.length > 0 ? before : '\u200b'), marker);
+    document.body.append(mirror);
+
+    try {
+        const markerTop = marker.offsetTop;
+        const borderTop = parseFloat(style.borderTopWidth) || 0;
+        return markerTop - borderTop;
+    } finally {
+        mirror.remove();
+    }
+}
+
+function getTextareaNumericLineHeight(style) {
+    const parsed = parseFloat(style.lineHeight);
+
+    if (Number.isFinite(parsed)) {
+        return parsed;
+    }
+
+    const fontSize = parseFloat(style.fontSize);
+    return Number.isFinite(fontSize) ? fontSize * 1.2 : 20;
+}
+
+function scrollMessageEditTextareaCaretApproximatelyIntoView(editor, caretOffset) {
+    if (editor.scrollHeight <= editor.clientHeight || editor.value.length === 0) {
+        return;
+    }
+
+    const style = getComputedStyle(editor);
+    const lineHeight = getTextareaNumericLineHeight(style);
+    const contextOffset = MOBILE_MESSAGE_EDIT_CARET_VISIBLE_PADDING
+        + (lineHeight * MOBILE_MESSAGE_EDIT_CARET_CONTEXT_LINES);
+    const targetTop = Math.round(
+        (editor.scrollHeight - editor.clientHeight)
+        * caretOffset
+        / editor.value.length,
+    ) - contextOffset;
+
+    editor.scrollTop = Math.max(0, Math.min(targetTop, editor.scrollHeight - editor.clientHeight));
+}
+
 function getActiveMobileMessageEditScrollGuard() {
     const guard = extensionState.mobileMessageEditScrollGuard;
 
+    if (!guard) {
+        return null;
+    }
+
     if (
-        !guard
-        || !isMobileMessageEditScrollGuardEnabled()
+        !isMobileMessageEditScrollGuardEnabled()
         || !(guard.editor instanceof HTMLElement)
         || !(guard.chat instanceof HTMLElement)
         || !guard.editor.isConnected
         || !guard.chat.isConnected
-        || !document.querySelector(MOBILE_MESSAGE_EDIT_SELECTOR)
+        || !guard.editor.matches(MOBILE_MESSAGE_EDIT_SELECTOR)
     ) {
         stopMobileMessageEditScrollGuard();
         return null;
@@ -4698,6 +5102,11 @@ function applyMessageTripleClickEditorCaret(editor, rawOffset, initialValue) {
 }
 
 function scrollMessageTripleClickEditorCaretIntoView(editor, caretOffset) {
+    if (editor instanceof HTMLTextAreaElement) {
+        ensureMobileMessageEditCaretVisible(editor);
+        return;
+    }
+
     if (editor.scrollHeight <= editor.clientHeight || editor.value.length === 0) {
         return;
     }
