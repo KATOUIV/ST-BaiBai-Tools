@@ -44,15 +44,11 @@ function escapeRegExp(value) {
     return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// 去掉 HTML 标签并把空白折叠成单空格，用于搜索匹配与片段预览。
-function stripTags(value) {
-    const text = String(value ?? '')
-        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-        .replace(/<[^>]*>/g, ' ');
-    const temp = document.createElement('textarea');
-    temp.innerHTML = text;
-    return temp.value.replace(/\s+/g, ' ').trim();
+// 只给列表预览用：隐藏思维块，保留其它原始文本/标签。
+function stripThinkingBlocks(value) {
+    return String(value ?? '')
+        .replace(/<think(?:ing)?\b[^>]*>[\s\S]*?<\/think(?:ing)?>/gmi, '')
+        .trim();
 }
 
 // 在转义后的纯文本上高亮命中词。先把 keyword 同样转义，确保与转义文本匹配。
@@ -444,11 +440,13 @@ function openFloorDirectoryDialog() {
     document.addEventListener('keydown', handleKeydown, true);
 
     // ---- 渲染逻辑 ----
-    // entries：当前结果集（已排序）；page：1 起显示页码；keyword：高亮词；filter：all/bot/user。
+    // totalItems + loadPageEntries：当前结果集的轻量分页源；page：1 起显示页码；keyword：高亮词；filter：all/bot/user。
     // reversePageOrder 只用于移动端浏览/关键词模式：显示第 1 页时实际切到结果集末尾。
     const renderState = {
         expanded: new Set(),
         entries: [],
+        totalItems: 0,
+        loadPageEntries: null,
         keyword: '',
         page: 1,
         filter: 'all',
@@ -466,9 +464,9 @@ function openFloorDirectoryDialog() {
 
     // 渲染当前页：每次都整块重建列表 DOM，避免翻页时元素越堆越多。
     const renderPage = () => {
-        const { entries, keyword } = renderState;
+        const { keyword, totalItems } = renderState;
 
-        if (!entries.length) {
+        if (!totalItems) {
             const scope = renderState.filter === 'user' ? 'User ' : renderState.filter === 'bot' ? 'Char ' : '';
             const message = keyword
                 ? `没有${scope}楼层匹配「${keyword}」`
@@ -477,13 +475,15 @@ function openFloorDirectoryDialog() {
             return;
         }
 
-        const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
+        const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
         renderState.page = Math.min(Math.max(1, renderState.page), totalPages);
         const slicePage = renderState.reversePageOrder
             ? totalPages - renderState.page + 1
             : renderState.page;
         const start = (slicePage - 1) * PAGE_SIZE;
-        const pageEntries = entries.slice(start, start + PAGE_SIZE);
+        const pageEntries = typeof renderState.loadPageEntries === 'function'
+            ? renderState.loadPageEntries(start, PAGE_SIZE)
+            : renderState.entries.slice(start, start + PAGE_SIZE);
 
         // 整块替换：旧行（含已展开的编辑器、事件监听）随 innerHTML 清空被回收。
         list.innerHTML = '';
@@ -538,6 +538,19 @@ function openFloorDirectoryDialog() {
     // 设置结果集并从指定页开始渲染。
     const showEntries = (entries, keyword, page = 1, options = {}) => {
         renderState.entries = entries;
+        renderState.totalItems = entries.length;
+        renderState.loadPageEntries = (start, count) => entries.slice(start, start + count);
+        renderState.keyword = keyword;
+        renderState.page = page;
+        renderState.reversePageOrder = Boolean(options.reversePageOrder);
+        renderPage();
+    };
+
+    // 设置分页结果源。调用方只提供总数和当前页加载器，避免预先处理所有楼层文本。
+    const showPagedEntries = (totalItems, loadPageEntries, keyword, page = 1, options = {}) => {
+        renderState.entries = [];
+        renderState.totalItems = Math.max(0, Number(totalItems) || 0);
+        renderState.loadPageEntries = loadPageEntries;
         renderState.keyword = keyword;
         renderState.page = page;
         renderState.reversePageOrder = Boolean(options.reversePageOrder);
@@ -553,7 +566,10 @@ function openFloorDirectoryDialog() {
     };
 
     const buildRow = (entry, keyword) => {
-        const { index, message, plainText } = entry;
+        const { index, message } = entry;
+        const plainText = typeof entry.plainText === 'string'
+            ? entry.plainText
+            : stripThinkingBlocks(message?.mes ?? '');
         const isUser = Boolean(message?.is_user);
 
         const row = document.createElement('div');
@@ -667,7 +683,7 @@ function openFloorDirectoryDialog() {
                 save.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>保存中</span>';
                 try {
                     await saveFloorEdit(freshCtx, index, textarea.value);
-                    entry.plainText = stripTags(textarea.value);
+                    entry.plainText = stripThinkingBlocks(textarea.value);
                     toastSuccess(`已保存第 ${index} 层`);
                     renderView();
                 } catch (error) {
@@ -736,6 +752,31 @@ function openFloorDirectoryDialog() {
         return true;
     };
 
+    const buildMessageEntry = (chat, index) => {
+        const message = chat[index];
+        return {
+            index,
+            message,
+            plainText: stripThinkingBlocks(message?.mes ?? ''),
+        };
+    };
+
+    const collectMessageIndexes = chat => {
+        const indexes = [];
+        for (let index = 0; index < chat.length; index += 1) {
+            const message = chat[index];
+            if (passesFilter(message)) {
+                indexes.push(index);
+            }
+        }
+        return indexes;
+    };
+
+    const messageMatchesKeyword = (message, lowerKeyword) => {
+        const raw = typeof message?.mes === 'string' ? message.mes : '';
+        return raw.toLowerCase().includes(lowerKeyword);
+    };
+
     const apply = rawValue => {
         const value = String(rawValue ?? '').trim();
         const freshCtx = getStContext();
@@ -751,11 +792,22 @@ function openFloorDirectoryDialog() {
         // 列表展示了一组（已按筛选收集、index 升序）楼层时，决定最终方向并落到合适的页：
         //   移动端正序（旧在上、最新在底，贴合聊天滚动方向）→ 显示第 1 页，实际切到末尾并滚到底；
         //   桌面端倒序（最新在上）→ 停在第 1 页。
-        const showBrowse = (collected, keyword) => {
+        const showBrowse = (messageIndexes, keyword) => {
             const mobile = isMobileViewport();
-            const entries = mobile ? collected : collected.slice().reverse();
-            showEntries(entries, keyword, 1, { reversePageOrder: mobile });
-            if (mobile && entries.length) {
+            const totalItems = messageIndexes.length;
+            const loadPageEntries = (start, count) => {
+                const end = Math.min(totalItems, start + count);
+                const pageEntries = [];
+                for (let offset = start; offset < end; offset += 1) {
+                    const sourceOffset = mobile ? offset : totalItems - 1 - offset;
+                    const index = messageIndexes[sourceOffset];
+                    pageEntries.push(buildMessageEntry(freshChat, index));
+                }
+                return pageEntries;
+            };
+
+            showPagedEntries(totalItems, loadPageEntries, keyword, 1, { reversePageOrder: mobile });
+            if (mobile && totalItems) {
                 requestAnimationFrame(() => {
                     list.scrollTop = list.scrollHeight;
                 });
@@ -778,9 +830,8 @@ function openFloorDirectoryDialog() {
                 if (!passesFilter(message)) {
                     continue;
                 }
-                const plainText = stripTags(message?.mes ?? '');
-                if (plainText.toLowerCase().includes(lowerKeyword)) {
-                    matches.push({ index, message, plainText });
+                if (messageMatchesKeyword(message, lowerKeyword)) {
+                    matches.push(index);
                 }
             }
             const orderedMatches = isMobileViewport() ? matches : matches.slice().reverse();
@@ -791,13 +842,15 @@ function openFloorDirectoryDialog() {
                 renderState.expanded = new Set([target]);
                 const targetMsg = freshChat[target];
                 entries.push({ type: 'header', label: `定位 · 楼层 #${target}` });
-                entries.push({ index: target, message: targetMsg, plainText: stripTags(targetMsg?.mes ?? '') });
+                entries.push({ index: target, message: targetMsg });
             } else {
                 renderState.expanded = new Set();
             }
             if (orderedMatches.length) {
                 entries.push({ type: 'header', label: `文本包含「${value}」的楼层（${orderedMatches.length}）` });
-                entries.push(...orderedMatches);
+                for (const index of orderedMatches) {
+                    entries.push({ index, message: freshChat[index] });
+                }
             }
 
             if (!entries.length) {
@@ -816,32 +869,23 @@ function openFloorDirectoryDialog() {
 
         // 默认（空输入）：展示（按筛选）全部楼层。
         if (!keyword) {
-            const collected = [];
-            for (let index = 0; index < freshChat.length; index += 1) {
-                const message = freshChat[index];
-                if (!passesFilter(message)) {
-                    continue;
-                }
-                collected.push({ index, message, plainText: stripTags(message?.mes ?? '') });
-            }
-            showBrowse(collected, '');
+            showBrowse(collectMessageIndexes(freshChat), '');
             return;
         }
 
         // 关键词搜索模式（叠加筛选）
         const lowerKeyword = keyword.toLowerCase();
-        const collected = [];
+        const matchedIndexes = [];
         for (let index = 0; index < freshChat.length; index += 1) {
             const message = freshChat[index];
             if (!passesFilter(message)) {
                 continue;
             }
-            const plainText = stripTags(message?.mes ?? '');
-            if (plainText.toLowerCase().includes(lowerKeyword)) {
-                collected.push({ index, message, plainText });
+            if (messageMatchesKeyword(message, lowerKeyword)) {
+                matchedIndexes.push(index);
             }
         }
-        showBrowse(collected, keyword);
+        showBrowse(matchedIndexes, keyword);
     };
 
     const syncClearButton = () => {
