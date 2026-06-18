@@ -29,6 +29,7 @@ const { SaveGenerateDisplay } = await importVersionedLocalModule('./saveGenerate
 const chatOptimizations = await importVersionedLocalModule('./chatOptimizations.js');
 const presetOptimizations = await importVersionedLocalModule('./presetOptimizations.js');
 const worldInfoPageOptimization = await importVersionedLocalModule('./worldInfoPageOptimization.js');
+const floorDirectory = await importVersionedLocalModule('./floorDirectory.js');
 
 const LOG_PREFIX = '[柏宝箱]';
 const MODULE_NAME = getModuleName();
@@ -412,6 +413,11 @@ worldInfoPageOptimization.configureWorldInfoPageOptimization({
     saveSettings: saveExtensionSettings,
 });
 presetOptimizations.installOpenAITokenizerBulkBridge();
+floorDirectory.configureFloorDirectory({
+    settings,
+    extensionState,
+    logPrefix: LOG_PREFIX,
+});
 
 initializeSettings();
 initializeExtensionUpdateCheck();
@@ -430,6 +436,7 @@ installSaveGenerateFetchHook();
 chatOptimizations.observeChatManagementPopupCleanup();
 applyFeatureSettings();
 jQuery(renderSettingsPanel);
+jQuery(() => floorDirectory.installFloorDirectory());
 
 function getExtensionState() {
     if (!globalThis[EXTENSION_KEY] || typeof globalThis[EXTENSION_KEY] !== 'object') {
