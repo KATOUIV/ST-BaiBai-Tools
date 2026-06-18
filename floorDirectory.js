@@ -341,11 +341,57 @@ function openFloorDirectoryDialog() {
     input.placeholder = '输入楼层号 / 关键词…';
     input.setAttribute('aria-label', '输入楼层号或关键词');
 
+    const clearButton = document.createElement('button');
+    clearButton.type = 'button';
+    clearButton.className = 'bai-bai-floor-clear';
+    clearButton.setAttribute('aria-label', '清空');
+    clearButton.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+    clearButton.hidden = true;
+
+    bar.append(barIcon, input, clearButton);
+
+    // ---- 控制行：提示 + 筛选 ----
+    const controls = document.createElement('div');
+    controls.className = 'bai-bai-floor-controls';
+
     const hint = document.createElement('div');
     hint.className = 'bai-bai-floor-hint';
     hint.textContent = '数字 = 定位楼层 · 文字 = 关键词搜索';
 
-    bar.append(barIcon, input);
+    const filterBar = document.createElement('div');
+    filterBar.className = 'bai-bai-floor-filter';
+    filterBar.setAttribute('role', 'group');
+    filterBar.setAttribute('aria-label', '按发言者筛选');
+
+    const FILTERS = [
+        { key: 'all', label: 'All' },
+        { key: 'bot', label: 'Char' },
+        { key: 'user', label: 'User' },
+    ];
+    const filterButtons = new Map();
+    for (const def of FILTERS) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'bai-bai-floor-filter-btn';
+        btn.textContent = def.label;
+        if (def.key === 'all') {
+            btn.classList.add('bai-bai-floor-filter-active');
+        }
+        btn.addEventListener('click', () => {
+            if (renderState.filter === def.key) {
+                return;
+            }
+            renderState.filter = def.key;
+            for (const [key, button] of filterButtons) {
+                button.classList.toggle('bai-bai-floor-filter-active', key === def.key);
+            }
+            apply(input.value);
+        });
+        filterButtons.set(def.key, btn);
+        filterBar.appendChild(btn);
+    }
+
+    controls.append(hint, filterBar);
 
     // ---- 列表 ----
     const list = document.createElement('div');
@@ -355,7 +401,7 @@ function openFloorDirectoryDialog() {
     const pager = document.createElement('div');
     pager.className = 'bai-bai-floor-pager';
 
-    dialog.append(head, bar, hint, list, pager);
+    dialog.append(head, bar, controls, list, pager);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
@@ -380,8 +426,8 @@ function openFloorDirectoryDialog() {
     document.addEventListener('keydown', handleKeydown, true);
 
     // ---- 渲染逻辑 ----
-    // entries：当前结果集（已排序）；page：1 起页码；keyword：高亮词。
-    const renderState = { expanded: new Set(), entries: [], keyword: '', page: 1 };
+    // entries：当前结果集（已排序）；page：1 起页码；keyword：高亮词；filter：all/bot/user。
+    const renderState = { expanded: new Set(), entries: [], keyword: '', page: 1, filter: 'all' };
 
     const renderEmpty = message => {
         list.innerHTML = '';
@@ -397,7 +443,11 @@ function openFloorDirectoryDialog() {
         const { entries, keyword } = renderState;
 
         if (!entries.length) {
-            renderEmpty(keyword ? `没有楼层匹配「${keyword}」` : '当前没有可显示的楼层');
+            const scope = renderState.filter === 'user' ? 'User ' : renderState.filter === 'bot' ? 'Char ' : '';
+            const message = keyword
+                ? `没有${scope}楼层匹配「${keyword}」`
+                : scope ? `当前没有${scope}楼层` : '当前没有可显示的楼层';
+            renderEmpty(message);
             return;
         }
 
@@ -492,7 +542,7 @@ function openFloorDirectoryDialog() {
         speaker.textContent = getSpeakerName(ctx, message);
         const tag = document.createElement('span');
         tag.className = 'bai-bai-floor-tag';
-        tag.textContent = isUser ? '我' : '角色';
+        tag.textContent = isUser ? 'User' : 'Char';
         meta.append(speaker, tag);
 
         const snippet = document.createElement('div');
@@ -550,7 +600,11 @@ function openFloorDirectoryDialog() {
             textarea.addEventListener('input', autosize);
             requestAnimationFrame(() => {
                 autosize();
-                textarea.focus();
+                // 移动端不自动聚焦：否则进入编辑就弹软键盘。需要时用户自己点输入框。
+                const isCoarsePointer = window.matchMedia?.('(pointer: coarse)')?.matches;
+                if (!isCoarsePointer) {
+                    textarea.focus();
+                }
             });
 
             cancel.addEventListener('click', renderView);
@@ -595,10 +649,6 @@ function openFloorDirectoryDialog() {
             renderView();
         }
 
-        // 展开区内的点击不冒泡到行（按钮在切换编辑态时会被重建/移除，
-        // 用 closest 在事件冒泡时已无法定位，故直接在容器上拦截）。
-        body.addEventListener('click', event => event.stopPropagation());
-
         main.append(meta, snippet, body);
         row.append(rail, main);
 
@@ -617,14 +667,27 @@ function openFloorDirectoryDialog() {
         };
 
         row.addEventListener('click', event => {
-            // 展开后的正文/操作区可能含可交互元素，点这些区域不收起。
-            if (event.target instanceof Element && event.target.closest('.bai-bai-floor-body')) {
+            // 只在点到正文内容或按钮时不收起；操作栏的空白处仍可点击收起。
+            // 用 closest（元素也会匹配自身）即使按钮在切换编辑态被移除也能命中。
+            if (event.target instanceof Element
+                && event.target.closest('.bai-bai-floor-detail, .bai-bai-floor-action, .bai-bai-floor-action *')) {
                 return;
             }
             toggle();
         });
 
         return row;
+    };
+
+    // 按当前筛选判断消息是否保留：all 全要；user 仅用户；bot 仅非用户。
+    const passesFilter = message => {
+        if (renderState.filter === 'user') {
+            return Boolean(message?.is_user);
+        }
+        if (renderState.filter === 'bot') {
+            return !message?.is_user;
+        }
+        return true;
     };
 
     const apply = rawValue => {
@@ -664,22 +727,29 @@ function openFloorDirectoryDialog() {
 
         const keyword = value;
 
-        // 默认（空输入）：展示全部楼层，最新在上。
+        // 默认（空输入）：展示（按筛选）全部楼层，最新在上。
         if (!keyword) {
-            const entries = freshChat.map((message, index) => ({
-                index,
-                message,
-                plainText: stripTags(message?.mes ?? ''),
-            })).reverse();
+            const entries = [];
+            for (let index = 0; index < freshChat.length; index += 1) {
+                const message = freshChat[index];
+                if (!passesFilter(message)) {
+                    continue;
+                }
+                entries.push({ index, message, plainText: stripTags(message?.mes ?? '') });
+            }
+            entries.reverse();
             showEntries(entries, '');
             return;
         }
 
-        // 关键词搜索模式
+        // 关键词搜索模式（叠加筛选）
         const lowerKeyword = keyword.toLowerCase();
         const entries = [];
         for (let index = 0; index < freshChat.length; index += 1) {
             const message = freshChat[index];
+            if (!passesFilter(message)) {
+                continue;
+            }
             const plainText = stripTags(message?.mes ?? '');
             if (plainText.toLowerCase().includes(lowerKeyword)) {
                 entries.push({ index, message, plainText });
@@ -689,21 +759,40 @@ function openFloorDirectoryDialog() {
         showEntries(entries, keyword);
     };
 
+    const syncClearButton = () => {
+        clearButton.hidden = input.value.length === 0;
+    };
+
     const debouncedApply = debounce(apply, 180);
-    input.addEventListener('input', () => debouncedApply(input.value));
+    input.addEventListener('input', () => {
+        syncClearButton();
+        debouncedApply(input.value);
+    });
     input.addEventListener('keydown', event => {
         if (event.key === 'Enter') {
             event.preventDefault();
             apply(input.value);
         }
     });
+    clearButton.addEventListener('click', () => {
+        input.value = '';
+        syncClearButton();
+        apply('');
+        input.focus();
+    });
 
     // 初始：展示全部楼层
     apply('');
+    syncClearButton();
 
+    // 移动端不自动聚焦输入框：否则会立刻弹出软键盘，缩小可视视口把
+    // position:fixed 的弹窗挤出屏幕（看起来像被关掉）。桌面端才自动聚焦。
     requestAnimationFrame(() => {
         dialog.focus({ preventScroll: true });
-        input.focus({ preventScroll: true });
+        const isCoarsePointer = window.matchMedia?.('(pointer: coarse)')?.matches;
+        if (!isCoarsePointer) {
+            input.focus({ preventScroll: true });
+        }
     });
 }
 
@@ -726,6 +815,13 @@ function getStyleCss() {
 .${OVERLAY_CLASS} {
     position: fixed;
     inset: 0;
+    /* 显式视口尺寸兜底：若某祖先建立了包含块（transform/filter/contain 等），
+       inset:0 会相对该块解析而可能塌成 0；用 vw/vh 强制占满视口。 */
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
     z-index: 10010;
     display: flex;
     align-items: center;
@@ -800,7 +896,14 @@ function getStyleCss() {
     gap: 8px;
     margin: 14px 16px 0;
     padding: 0 12px;
+    /* 固定高度，子元素（含继承主题样式的按钮）不得撑高命令栏。
+       命令栏处在列向 flex 容器里，必须 flex:0 0 auto 锁死：否则默认
+       flex-shrink:1 会在空间紧张时把它压扁（高度过低），而清空按钮出现后
+       其内容最小高度又顶回 42px（被“拉高”）——两个现象同源。 */
+    flex: 0 0 auto;
     height: 42px;
+    box-sizing: border-box;
+    overflow: hidden;
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 10px;
     background: var(--SmartThemeChatTintColor);
@@ -820,24 +923,114 @@ function getStyleCss() {
 .${OVERLAY_CLASS} .bai-bai-floor-input {
     flex: 1 1 auto;
     min-width: 0;
-    height: 100%;
+    /* 不再用 height:100%，避免被子元素的撑高反向带高；按内容单行居中即可 */
+    height: auto;
+    margin: 0;
+    padding: 0;
     color: var(--SmartThemeBodyColor);
-    background: transparent;
-    border: none;
+    /* 强制透明 + !important：部分主题给所有 input/text_pole 加了带 !important
+       的底色，会在命令栏里显出一块异色矩形，必须用 !important 才能压过。
+       透明后始终透出命令栏的背景，二者同色。 */
+    background: transparent none !important;
+    border: none !important;
+    box-shadow: none !important;
     outline: none;
     font-size: 0.95rem;
     font-family: inherit;
+    line-height: normal;
 }
 
 .${OVERLAY_CLASS} .bai-bai-floor-input::placeholder {
     color: var(--SmartThemeEmColor);
 }
 
+.${OVERLAY_CLASS} .bai-bai-floor-clear {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    /* 锁死尺寸并清掉主题给 button 的 min-height/line-height，否则会撑高命令栏 */
+    box-sizing: border-box;
+    width: 24px;
+    height: 24px;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    line-height: 1;
+    color: var(--SmartThemeEmColor);
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    opacity: 0.75;
+    transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-clear:hover {
+    opacity: 1;
+    background: rgba(127, 127, 127, 0.18);
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-clear[hidden] {
+    display: none;
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-controls {
+    display: flex;
+    /* 显式锁定方向：部分主题会在通用选择器上设 direction:rtl 或
+       flex-direction:row-reverse，导致筛选跑到左边。这里强制 LTR + 正向。 */
+    direction: ltr;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 8px 16px 10px;
+}
+
 .${OVERLAY_CLASS} .bai-bai-floor-hint {
-    margin: 6px 16px 10px;
+    flex: 1 1 auto;
+    min-width: 0;
     font-size: 0.72rem;
     color: var(--SmartThemeEmColor);
     letter-spacing: 0.02em;
+}
+
+/* 分段控件：一条浅色轨道，内嵌可滑动的圆角分段，激活段浮起为强调色胶囊 */
+.${OVERLAY_CLASS} .bai-bai-floor-filter {
+    flex: 0 0 auto;
+    /* 无论 hint 是否存在/换行，都把筛选钉在最右侧 */
+    margin-left: auto;
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--SmartThemeBorderColor) 22%, transparent);
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-filter-btn {
+    padding: 4px 14px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    font-family: inherit;
+    color: var(--SmartThemeEmColor);
+    background: transparent;
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-filter-btn:hover {
+    color: var(--SmartThemeBodyColor);
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-filter-active,
+.${OVERLAY_CLASS} .bai-bai-floor-filter-active:hover {
+    color: var(--SmartThemeBlurTintColor);
+    background: var(--SmartThemeQuoteColor);
+    box-shadow: 0 1px 3px var(--SmartThemeShadowColor, rgba(0, 0, 0, 0.25));
 }
 
 .${OVERLAY_CLASS} .bai-bai-floor-list {
@@ -876,19 +1069,31 @@ function getStyleCss() {
     background: color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent);
 }
 
-/* 楼层轨：竖直强调条 + 表格数字（电梯楼层指示器） */
+/* 楼层轨：竖直强调条 + 表格数字（电梯楼层指示器）。
+   Char / User 仅用消息的 tint 色给竖线着色，不再填充浅色背景块。 */
 .${OVERLAY_CLASS} .bai-bai-floor-rail {
+    position: relative;
     flex: 0 0 auto;
     display: flex;
     align-items: flex-start;
     justify-content: center;
     min-width: 46px;
-    padding-left: 8px;
-    border-left: 3px solid var(--SmartThemeBotMesBlurTintColor);
+    padding: 4px 6px 4px 10px;
 }
 
-.${OVERLAY_CLASS} .bai-bai-floor-row-user .bai-bai-floor-rail {
-    border-left-color: var(--SmartThemeUserMesBlurTintColor);
+/* 竖线用伪元素画：细一点（2px）并留出上下内缩，是一根直的小竖条。 */
+.${OVERLAY_CLASS} .bai-bai-floor-rail::before {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--SmartThemeBotMesBlurTintColor);
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-row-user .bai-bai-floor-rail::before {
+    background: var(--SmartThemeUserMesBlurTintColor);
 }
 
 .${OVERLAY_CLASS} .bai-bai-floor-num {
@@ -897,7 +1102,7 @@ function getStyleCss() {
     font-size: 1.2rem;
     font-weight: 700;
     line-height: 1.25;
-    color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBodyColor);
 }
 
 .${OVERLAY_CLASS} .bai-bai-floor-main {
@@ -922,11 +1127,18 @@ function getStyleCss() {
 
 .${OVERLAY_CLASS} .bai-bai-floor-tag {
     flex: 0 0 auto;
-    font-size: 0.66rem;
-    padding: 1px 7px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: capitalize;
+    padding: 1px 8px;
     border-radius: 999px;
-    color: var(--SmartThemeEmColor);
-    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 70%, transparent);
+    color: var(--SmartThemeBodyColor);
+    background: color-mix(in srgb, var(--SmartThemeBotMesBlurTintColor) 50%, transparent);
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-row-user .bai-bai-floor-tag {
+    background: color-mix(in srgb, var(--SmartThemeUserMesBlurTintColor) 50%, transparent);
 }
 
 .${OVERLAY_CLASS} .bai-bai-floor-snippet {
@@ -1078,8 +1290,10 @@ function getStyleCss() {
 }
 
 .${OVERLAY_CLASS} .bai-bai-floor-close:focus-visible,
+.${OVERLAY_CLASS} .bai-bai-floor-clear:focus-visible,
 .${OVERLAY_CLASS} .bai-bai-floor-action:focus-visible,
 .${OVERLAY_CLASS} .bai-bai-floor-page-btn:focus-visible,
+.${OVERLAY_CLASS} .bai-bai-floor-filter-btn:focus-visible,
 .${OVERLAY_CLASS} .bai-bai-floor-row:focus-visible {
     outline: 2px solid var(--SmartThemeQuoteColor);
     outline-offset: 2px;
@@ -1098,15 +1312,19 @@ function getStyleCss() {
 @media (max-width: 600px) {
     .${OVERLAY_CLASS} {
         padding: 0;
-        align-items: stretch;
-        justify-content: stretch;
+        align-items: flex-end;
     }
     .${OVERLAY_CLASS} .bai-bai-floor-dialog {
         width: 100%;
-        max-height: 100%;
-        height: 100%;
-        border-radius: 0;
+        /* 用视口高度而非 height:100%，后者依赖祖先链有确定高度，
+           在部分移动布局下会塌成 0（表现为窗口看不见）。 */
+        height: 70vh;
+        height: 70dvh;
+        max-height: 70vh;
+        max-height: 70dvh;
+        border-radius: 14px 14px 0 0;
         border: none;
+        border-top: 1px solid var(--SmartThemeBorderColor);
     }
 }
 
