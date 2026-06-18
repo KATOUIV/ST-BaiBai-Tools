@@ -12873,22 +12873,70 @@ async function maybeHandleSaveGenerateSaveRequest(state, input, init) {
         return null;
     }
 
-    record.consumed = true;
     const job = await waitSaveGenerateJobTerminal(state, record);
+    if (job?.status) {
+        record.status = job.status;
+    }
     clearActiveSaveGenerateCancelTarget(state, {
         id: record.id,
         chatId: record.save?.chatId,
     });
-    cleanupSaveGenerateRecords(state);
 
     if (job && isSaveGenerateChatAlreadySavedStatus(job)) {
         console.debug(`${LOG_PREFIX} save-generate saved ${record.save.file_name}; skipping native /api/chats/save`);
+        record.consumed = true;
         markSaveGenerateJobSeen(job);
+        cleanupSaveGenerateRecords(state);
         return buildSkippedSaveGenerateSaveResponse(job);
     }
 
     console.debug(`${LOG_PREFIX} save-generate did not save ${record.save.file_name}; native /api/chats/save will run`, job);
-    return null;
+    return fetchNativeSaveForSaveGenerateRecord(state, input, init, record, job);
+}
+
+async function fetchNativeSaveForSaveGenerateRecord(state, input, init, record, job = null) {
+    const saveGuard = markSaveGenerateLocalRequestGuard(state, record?.save?.chatId);
+    try {
+        const response = await state.originalFetch(input, init);
+        if (response?.ok) {
+            finishSaveGenerateNativeSave(state, record, job);
+        } else {
+            forgetSaveGenerateLocalJobOwnership(state, record);
+        }
+        releaseSaveGenerateLocalRequestGuard(state, saveGuard, SAVE_GENERATE_LOCAL_REQUEST_GUARD_RELEASE_DELAY_MS);
+        return response;
+    } catch (error) {
+        forgetSaveGenerateLocalJobOwnership(state, record);
+        releaseSaveGenerateLocalRequestGuard(state, saveGuard);
+        throw error;
+    }
+}
+
+function finishSaveGenerateNativeSave(state, record, job = null) {
+    if (!state || !record) {
+        return;
+    }
+
+    record.consumed = true;
+    markSaveGenerateJobSeen(job?.id ? job : { id: record.id });
+    cleanupSaveGenerateRecords(state);
+}
+
+function forgetSaveGenerateLocalJobOwnership(state, record) {
+    if (!state || !record) {
+        return;
+    }
+
+    record.consumed = true;
+    cleanupSaveGenerateRecords(state);
+}
+
+function releaseSaveGenerateLocalRequestGuard(state, guard, delayMs = 0) {
+    if (!guard) {
+        return;
+    }
+
+    setTimeout(() => clearSaveGenerateLocalRequestGuard(state, guard), Math.max(0, Number(delayMs || 0)));
 }
 
 function findMatchingSaveGenerateRecord(state, saveBody) {
@@ -13320,6 +13368,11 @@ async function runCurrentSaveGenerateJobCheck(state, chatId, reason = 'unknown',
         return null;
     }
 
+    if (scriptModule.is_send_press) {
+        console.debug(`${LOG_PREFIX} save-generate resume check skipped: SillyTavern generation is still active (${reason})`);
+        return null;
+    }
+
     if (reason !== 'generate-fetch' && isSaveGenerateLocalRequestGuarded(state, chatId)) {
         console.debug(`${LOG_PREFIX} save-generate resume check skipped: local generate request is pending (${reason})`);
         return null;
@@ -13362,12 +13415,19 @@ async function runCurrentSaveGenerateJobCheck(state, chatId, reason = 'unknown',
         }
 
         if (isSaveGenerateKnownLocalJob(state, job.id)) {
-            if (isSaveGenerateTerminalStatus(job.status)) {
+            const status = String(job.status || '');
+            if (status === 'completed') {
+                markSaveGenerateLocalJobConsumed(state, job.id);
+                console.debug(`${LOG_PREFIX} save-generate local completed job is no longer guarded; continuing recovery job=${job.id} (${reason})`);
+            } else if (isSaveGenerateTerminalStatus(status)) {
                 markSaveGenerateLocalJobConsumed(state, job.id);
                 markSaveGenerateJobSeen(job);
+                console.debug(`${LOG_PREFIX} save-generate resume check skipped: job is owned by current page job=${job.id} (${reason})`);
+                return job;
+            } else {
+                console.debug(`${LOG_PREFIX} save-generate resume check skipped: job is owned by current page job=${job.id} (${reason})`);
+                return job;
             }
-            console.debug(`${LOG_PREFIX} save-generate resume check skipped: job is owned by current page job=${job.id} (${reason})`);
-            return job;
         }
 
         console.debug(`${LOG_PREFIX} save-generate resume check found job=${job.id} status=${job.status} reason=${reason}`);
