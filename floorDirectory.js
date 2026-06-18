@@ -19,6 +19,7 @@ const INSTALL_GUARD_KEY = '__baiBaiToolkitFloorDirectoryInstalled';
 
 const SNIPPET_RADIUS = 48; // 关键词命中处前后保留的字符数
 const MAX_PREVIEW_LENGTH = 140; // 行内片段预览最大长度
+const PAGE_SIZE = 30; // 每页楼层数
 
 export function configureFloorDirectory(context = {}) {
     settings = context.settings ?? settings;
@@ -350,7 +351,11 @@ function openFloorDirectoryDialog() {
     const list = document.createElement('div');
     list.className = 'bai-bai-floor-list';
 
-    dialog.append(head, bar, hint, list);
+    // ---- 分页条 ----
+    const pager = document.createElement('div');
+    pager.className = 'bai-bai-floor-pager';
+
+    dialog.append(head, bar, hint, list, pager);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
@@ -375,32 +380,87 @@ function openFloorDirectoryDialog() {
     document.addEventListener('keydown', handleKeydown, true);
 
     // ---- 渲染逻辑 ----
-    const renderState = { expanded: new Set() };
+    // entries：当前结果集（已排序）；page：1 起页码；keyword：高亮词。
+    const renderState = { expanded: new Set(), entries: [], keyword: '', page: 1 };
 
     const renderEmpty = message => {
         list.innerHTML = '';
+        pager.innerHTML = '';
         const empty = document.createElement('div');
         empty.className = 'bai-bai-floor-empty';
         empty.textContent = message;
         list.appendChild(empty);
     };
 
-    const renderRows = (entries, keyword) => {
-        list.innerHTML = '';
+    // 渲染当前页：每次都整块重建列表 DOM，避免翻页时元素越堆越多。
+    const renderPage = () => {
+        const { entries, keyword } = renderState;
 
         if (!entries.length) {
-            const message = keyword
-                ? `没有楼层匹配「${keyword}」`
-                : '当前没有可显示的楼层';
-            renderEmpty(message);
+            renderEmpty(keyword ? `没有楼层匹配「${keyword}」` : '当前没有可显示的楼层');
             return;
         }
 
+        const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
+        renderState.page = Math.min(Math.max(1, renderState.page), totalPages);
+        const start = (renderState.page - 1) * PAGE_SIZE;
+        const pageEntries = entries.slice(start, start + PAGE_SIZE);
+
+        // 整块替换：旧行（含已展开的编辑器、事件监听）随 innerHTML 清空被回收。
+        list.innerHTML = '';
+        list.scrollTop = 0;
         const fragment = document.createDocumentFragment();
-        for (const entry of entries) {
+        for (const entry of pageEntries) {
             fragment.appendChild(buildRow(entry, keyword));
         }
         list.appendChild(fragment);
+
+        renderPager(totalPages);
+    };
+
+    const goToPage = page => {
+        if (page === renderState.page) {
+            return;
+        }
+        renderState.page = page;
+        renderPage();
+    };
+
+    const renderPager = totalPages => {
+        pager.innerHTML = '';
+        if (totalPages <= 1) {
+            return;
+        }
+
+        const prev = document.createElement('button');
+        prev.type = 'button';
+        prev.className = 'bai-bai-floor-page-btn';
+        prev.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
+        prev.setAttribute('aria-label', '上一页');
+        prev.disabled = renderState.page <= 1;
+        prev.addEventListener('click', () => goToPage(renderState.page - 1));
+
+        const info = document.createElement('span');
+        info.className = 'bai-bai-floor-page-info';
+        info.textContent = `${renderState.page} / ${totalPages}`;
+
+        const next = document.createElement('button');
+        next.type = 'button';
+        next.className = 'bai-bai-floor-page-btn';
+        next.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
+        next.setAttribute('aria-label', '下一页');
+        next.disabled = renderState.page >= totalPages;
+        next.addEventListener('click', () => goToPage(renderState.page + 1));
+
+        pager.append(prev, info, next);
+    };
+
+    // 设置结果集并从指定页开始渲染。
+    const showEntries = (entries, keyword, page = 1) => {
+        renderState.entries = entries;
+        renderState.keyword = keyword;
+        renderState.page = page;
+        renderPage();
     };
 
     const buildRow = (entry, keyword) => {
@@ -586,13 +646,19 @@ function openFloorDirectoryDialog() {
                 renderEmpty(`楼层号超出范围，本聊天共 ${freshChat.length} 层（0 ~ ${freshChat.length - 1}）`);
                 return;
             }
+            // 全部楼层（最新在上）里定位到目标楼，跳到它所在页并展开。
             renderState.expanded = new Set([target]);
-            const message = freshChat[target];
-            renderRows([{
-                index: target,
+            const entries = freshChat.map((message, index) => ({
+                index,
                 message,
                 plainText: stripTags(message?.mes ?? ''),
-            }], '');
+            })).reverse();
+            const position = entries.findIndex(entry => entry.index === target);
+            const page = position >= 0 ? Math.floor(position / PAGE_SIZE) + 1 : 1;
+            showEntries(entries, '', page);
+            requestAnimationFrame(() => {
+                list.querySelector('.bai-bai-floor-row-open')?.scrollIntoView({ block: 'nearest' });
+            });
             return;
         }
 
@@ -605,7 +671,7 @@ function openFloorDirectoryDialog() {
                 message,
                 plainText: stripTags(message?.mes ?? ''),
             })).reverse();
-            renderRows(entries, '');
+            showEntries(entries, '');
             return;
         }
 
@@ -620,7 +686,7 @@ function openFloorDirectoryDialog() {
             }
         }
         entries.reverse();
-        renderRows(entries, keyword);
+        showEntries(entries, keyword);
     };
 
     const debouncedApply = debounce(apply, 180);
@@ -967,8 +1033,53 @@ function getStyleCss() {
     background: color-mix(in srgb, var(--SmartThemeQuoteColor) 14%, transparent);
 }
 
+.${OVERLAY_CLASS} .bai-bai-floor-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 0 16px;
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-pager:not(:empty) {
+    padding: 10px 16px 14px;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-page-btn {
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--SmartThemeBodyColor);
+    background: transparent;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.12s ease, opacity 0.12s ease;
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-page-btn:hover:not(:disabled) {
+    background: rgba(127, 127, 127, 0.12);
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-page-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.${OVERLAY_CLASS} .bai-bai-floor-page-info {
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--SmartThemeEmColor);
+    min-width: 56px;
+    text-align: center;
+}
+
 .${OVERLAY_CLASS} .bai-bai-floor-close:focus-visible,
 .${OVERLAY_CLASS} .bai-bai-floor-action:focus-visible,
+.${OVERLAY_CLASS} .bai-bai-floor-page-btn:focus-visible,
 .${OVERLAY_CLASS} .bai-bai-floor-row:focus-visible {
     outline: 2px solid var(--SmartThemeQuoteColor);
     outline-offset: 2px;
