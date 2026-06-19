@@ -59,6 +59,7 @@ const CHAT_DELETE_EDIT_WINDOW_MS = 5000;
 const MOBILE_AUTO_KEYBOARD_DIRECT_FOCUS_WINDOW_MS = 1500;
 const MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_TOLERANCE = 2;
 const MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_DELAYS = [0, 50, 160];
+const MESSAGE_EDIT_BOTTOM_ACTION_SCROLL_RESTORE_DELAYS = [0, 50, 160, 360, 800];
 const MOBILE_MESSAGE_EDIT_CARET_VISIBLE_PADDING = 24;
 const MOBILE_MESSAGE_EDIT_CARET_CONTEXT_LINES = 2;
 const MOBILE_MESSAGE_EDIT_EDITOR_SCROLL_INTENT_MS = 1200;
@@ -2386,7 +2387,104 @@ function cloneMessageEditBottomAction(source, actionName) {
     const clone = source.cloneNode(false);
     clone.dataset.baiBaiToolkitBottomAction = actionName;
     clone.removeAttribute('id');
+    clone.addEventListener('click', () => {
+        scheduleMessageEditBottomActionScrollRestore(clone);
+    }, true);
     return clone;
+}
+
+function scheduleMessageEditBottomActionScrollRestore(button) {
+    const snapshot = captureMessageEditBottomActionScrollSnapshot(button);
+    if (!snapshot) {
+        return;
+    }
+
+    const restore = () => {
+        restoreMessageEditBottomActionScroll(snapshot);
+    };
+
+    requestAnimationFrame(() => {
+        restore();
+        requestAnimationFrame(restore);
+    });
+
+    for (const delay of MESSAGE_EDIT_BOTTOM_ACTION_SCROLL_RESTORE_DELAYS) {
+        setTimeout(restore, delay);
+    }
+
+    installMessageEditBottomActionUpdatedRestore(snapshot, restore);
+}
+
+function captureMessageEditBottomActionScrollSnapshot(button) {
+    const chat = document.querySelector('#chat');
+    const message = button instanceof HTMLElement ? button.closest('.mes[mesid]') : null;
+
+    if (!(chat instanceof HTMLElement) || !(message instanceof HTMLElement)) {
+        return null;
+    }
+
+    const chatRect = chat.getBoundingClientRect();
+    const messageRect = message.getBoundingClientRect();
+    return {
+        messageId: message.getAttribute('mesid'),
+        bottomInChat: messageRect.bottom - chatRect.top,
+    };
+}
+
+function installMessageEditBottomActionUpdatedRestore(snapshot, restore) {
+    if (typeof eventSource?.on !== 'function' || !event_types.MESSAGE_UPDATED) {
+        return;
+    }
+
+    let cleanupTimer = null;
+    const cleanup = () => {
+        clearTimeout(cleanupTimer);
+        eventSource.removeListener?.(event_types.MESSAGE_UPDATED, updatedHandler);
+    };
+    const updatedHandler = (messageId) => {
+        if (String(messageId) !== String(snapshot.messageId)) {
+            return;
+        }
+
+        cleanup();
+        restore();
+        setTimeout(restore, 0);
+        setTimeout(restore, 50);
+        setTimeout(restore, 160);
+    };
+
+    eventSource.on(event_types.MESSAGE_UPDATED, updatedHandler);
+    cleanupTimer = setTimeout(cleanup, 5000);
+}
+
+function restoreMessageEditBottomActionScroll(snapshot) {
+    const chat = document.querySelector('#chat');
+    if (!(chat instanceof HTMLElement) || snapshot?.messageId == null) {
+        return;
+    }
+
+    const messageId = escapeMessageEditBottomActionSelectorValue(String(snapshot.messageId));
+    const message = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+    if (!(message instanceof HTMLElement)) {
+        return;
+    }
+
+    const chatRect = chat.getBoundingClientRect();
+    const messageRect = message.getBoundingClientRect();
+    const currentBottomInChat = messageRect.bottom - chatRect.top;
+    const delta = currentBottomInChat - Number(snapshot.bottomInChat);
+
+    if (Math.abs(delta) > 1) {
+        chat.scrollTop += delta;
+    }
+}
+
+function escapeMessageEditBottomActionSelectorValue(value) {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+        return CSS.escape(value);
+    }
+
+    return value.replace(/["\\]/g, '\\$&');
 }
 
 function ensureMessageEditBottomActionsStyle() {
