@@ -18,9 +18,11 @@ import { timestampToMoment } from '../../../utils.js';
 const FAST_CHAT_SEARCH_FETCH_KEY = '__baiBaiToolkitFastChatSearchFetchPatched';
 const FAST_CHAT_LIST_SCROLL_STYLE_ID = 'bai_bai_toolkit_fast_chat_list_scroll_style';
 const LONG_CHAT_DOM_RENDER_STYLE_ID = 'bai_bai_toolkit_long_chat_dom_render_style';
+const MESSAGE_EDIT_BOTTOM_ACTIONS_STYLE_ID = 'bai_bai_toolkit_message_edit_bottom_actions_style';
 const CHAT_DELETE_EDIT_HANDLER_KEY = '__baiBaiToolkitChatDeleteEditHandler';
 const CHAT_DELETE_MESSAGE_DELETED_HANDLER_KEY = '__baiBaiToolkitChatDeleteMessageDeletedHandler';
 const CHAT_DELETE_GENERATION_ACTION_HANDLER_KEY = '__baiBaiToolkitChatDeleteGenerationActionHandler';
+const MESSAGE_EDIT_BOTTOM_ACTIONS_STATE_KEY = '__baiBaiToolkitMessageEditBottomActions';
 const WELCOME_RECENT_CHAT_DIRECT_OPEN_HANDLER_KEY = '__baiBaiToolkitWelcomeRecentChatDirectOpenHandler';
 const WELCOME_RECENT_CHAT_DIRECT_OPEN_CURRENT_HANDLER_KEY = '__baiBaiToolkitWelcomeRecentChatDirectOpenCurrentHandler';
 const MESSAGE_COMPLETION_SCROLL_HANDLER_KEY = '__baiBaiToolkitMessageCompletionScrollHandler';
@@ -57,6 +59,7 @@ const CHAT_DELETE_EDIT_WINDOW_MS = 5000;
 const MOBILE_AUTO_KEYBOARD_DIRECT_FOCUS_WINDOW_MS = 1500;
 const MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_TOLERANCE = 2;
 const MOBILE_MESSAGE_EDIT_SCROLL_RESTORE_DELAYS = [0, 50, 160];
+const MESSAGE_EDIT_BOTTOM_ACTION_SCROLL_RESTORE_DELAYS = [0, 50, 160, 360, 800];
 const MOBILE_MESSAGE_EDIT_CARET_VISIBLE_PADDING = 24;
 const MOBILE_MESSAGE_EDIT_CARET_CONTEXT_LINES = 2;
 const MOBILE_MESSAGE_EDIT_EDITOR_SCROLL_INTENT_MS = 1200;
@@ -65,6 +68,7 @@ const CHAT_MESSAGE_EDIT_SELECTOR = '#chat .mes_edit';
 const WELCOME_PANEL_SELECTOR = '#chat .welcomePanel';
 const WELCOME_RECENT_CHAT_SELECTOR = '#chat .welcomePanel .recentChat';
 const WELCOME_RECENT_CHAT_ACTION_SELECTOR = '.renameChat, .deleteChat, .pinChat, button, a, input, select, textarea';
+const MESSAGE_EDIT_BOTTOM_ACTIONS_CLASS = 'bai-bai-toolkit-message-edit-bottom-actions';
 const MOBILE_MESSAGE_EDIT_SELECTOR = '#curEditTextarea, .reasoning_edit_textarea';
 const MOBILE_AUTO_KEYBOARD_TARGET_SELECTOR = '#curEditTextarea, #select_chat_search';
 const MOBILE_CHAT_ENTRY_KEYBOARD_TARGET_SELECTOR = '#send_textarea';
@@ -78,6 +82,7 @@ const MESSAGE_COMPLETION_SOUND_STORE = 'messageCompletionSounds';
 const MESSAGE_COMPLETION_SOUND_LOCAL_KEY = 'local';
 const MESSAGE_COMPLETION_SOUND_MAX_LOCAL_BYTES = 5 * 1024 * 1024;
 const MESSAGE_COMPLETION_SOUND_COOLDOWN_MS = 1000;
+const MESSAGE_COMPLETION_SOUND_KEEP_ALIVE_SRC = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==';
 const BUILTIN_COMPLETION_SOUNDS = [
     { id: 'guoke-bell', label: '果壳铃', file: '果壳铃.mp3' },
     { id: 'stardew-fish', label: '星露谷 - 钓鱼上钩', file: '星露谷-钓鱼上钩.mp3' },
@@ -190,6 +195,14 @@ export function bindChatOptimizationSettings({ saveSettings } = {}) {
             settings.chatDeleteEditFlowOptimizationEnabled = Boolean($(this).prop('checked'));
             persistSettings();
             applyChatDeleteEditFlowOptimization();
+        });
+
+    $('#bai_bai_toolkit_message_edit_bottom_actions_enabled')
+        .prop('checked', settings.messageEditBottomActionsEnabled !== false)
+        .on('input', function () {
+            settings.messageEditBottomActionsEnabled = Boolean($(this).prop('checked'));
+            persistSettings();
+            applyMessageEditBottomActions();
         });
 
     initializeMessageCompletionSoundControls(persistSettings);
@@ -2220,6 +2233,298 @@ function applyChatDeleteEditFlowOptimization() {
     eventSource.on(event_types.MESSAGE_DELETED, messageDeletedHandler);
 }
 
+function applyMessageEditBottomActions() {
+    if (settings.messageEditBottomActionsEnabled === false) {
+        removeMessageEditBottomActions();
+        return;
+    }
+
+    installMessageEditBottomActions();
+    scheduleMessageEditBottomActionsUpdate();
+}
+
+function getMessageEditBottomActionsState() {
+    if (!extensionState[MESSAGE_EDIT_BOTTOM_ACTIONS_STATE_KEY] || typeof extensionState[MESSAGE_EDIT_BOTTOM_ACTIONS_STATE_KEY] !== 'object') {
+        extensionState[MESSAGE_EDIT_BOTTOM_ACTIONS_STATE_KEY] = {};
+    }
+
+    return extensionState[MESSAGE_EDIT_BOTTOM_ACTIONS_STATE_KEY];
+}
+
+function installMessageEditBottomActions() {
+    ensureMessageEditBottomActionsStyle();
+
+    const state = getMessageEditBottomActionsState();
+    const chat = document.querySelector('#chat');
+    if (!(chat instanceof HTMLElement) || typeof MutationObserver !== 'function') {
+        clearTimeout(state.retryTimer);
+        state.retryTimer = setTimeout(() => {
+            state.retryTimer = null;
+            applyMessageEditBottomActions();
+        }, 1000);
+        return;
+    }
+
+    if (state.observer && state.chatElement === chat) {
+        return;
+    }
+
+    state.observer?.disconnect();
+    state.chatElement = chat;
+    state.observer = new MutationObserver(() => {
+        scheduleMessageEditBottomActionsUpdate();
+    });
+    state.observer.observe(chat, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class'],
+    });
+}
+
+function removeMessageEditBottomActions() {
+    const state = getMessageEditBottomActionsState();
+    state.observer?.disconnect();
+    state.observer = null;
+    state.chatElement = null;
+    clearTimeout(state.retryTimer);
+    state.retryTimer = null;
+    if (state.updateFrame) {
+        cancelAnimationFrame(state.updateFrame);
+        state.updateFrame = 0;
+    }
+
+    document.getElementById(MESSAGE_EDIT_BOTTOM_ACTIONS_STYLE_ID)?.remove();
+    document.querySelectorAll(`#chat .${MESSAGE_EDIT_BOTTOM_ACTIONS_CLASS}`).forEach(container => container.remove());
+}
+
+function scheduleMessageEditBottomActionsUpdate() {
+    const state = getMessageEditBottomActionsState();
+    if (state.updateFrame) {
+        return;
+    }
+
+    state.updateFrame = requestAnimationFrame(() => {
+        state.updateFrame = 0;
+        updateMessageEditBottomActions();
+    });
+}
+
+function updateMessageEditBottomActions() {
+    if (settings.messageEditBottomActionsEnabled === false) {
+        removeMessageEditBottomActions();
+        return;
+    }
+
+    installMessageEditBottomActions();
+
+    const chat = document.querySelector('#chat');
+    if (!(chat instanceof HTMLElement)) {
+        return;
+    }
+
+    const activeEditor = chat.querySelector('#curEditTextarea');
+    cleanupInactiveMessageEditBottomActions(activeEditor);
+
+    if (!(activeEditor instanceof HTMLElement)) {
+        return;
+    }
+
+    ensureMessageEditBottomActionsForEditor(activeEditor);
+}
+
+function cleanupInactiveMessageEditBottomActions(activeEditor) {
+    const activeMessage = activeEditor instanceof HTMLElement ? activeEditor.closest('.mes') : null;
+    document.querySelectorAll(`#chat .${MESSAGE_EDIT_BOTTOM_ACTIONS_CLASS}`).forEach(container => {
+        if (container.closest('.mes') !== activeMessage) {
+            container.remove();
+        }
+    });
+}
+
+function ensureMessageEditBottomActionsForEditor(editor) {
+    const message = editor.closest('.mes');
+    const host = editor.parentElement;
+    if (!(message instanceof HTMLElement) || !(host instanceof HTMLElement)) {
+        return;
+    }
+
+    const topConfirm = message.querySelector('.mes_edit_buttons .mes_edit_done');
+    const topCancel = message.querySelector('.mes_edit_buttons .mes_edit_cancel');
+    if (!(topConfirm instanceof HTMLElement) || !(topCancel instanceof HTMLElement)) {
+        return;
+    }
+
+    const existingContainers = Array.from(message.querySelectorAll(`.${MESSAGE_EDIT_BOTTOM_ACTIONS_CLASS}`));
+    let container = existingContainers.find(element => element.parentElement === host);
+    for (const element of existingContainers) {
+        if (element !== container) {
+            element.remove();
+        }
+    }
+
+    if (!(container instanceof HTMLElement)) {
+        container = document.createElement('div');
+        container.className = MESSAGE_EDIT_BOTTOM_ACTIONS_CLASS;
+        container.dataset.baiBaiToolkit = 'message-edit-bottom-actions';
+    }
+
+    if (container.parentElement !== host || container.previousElementSibling !== editor) {
+        editor.insertAdjacentElement('afterend', container);
+    }
+
+    if (container.dataset.ready === 'true') {
+        return;
+    }
+
+    const bottomConfirm = cloneMessageEditBottomAction(topConfirm, 'bottom-confirm');
+    const bottomCancel = cloneMessageEditBottomAction(topCancel, 'bottom-cancel');
+    container.replaceChildren(bottomCancel, bottomConfirm);
+    container.dataset.ready = 'true';
+}
+
+function cloneMessageEditBottomAction(source, actionName) {
+    const clone = source.cloneNode(false);
+    clone.dataset.baiBaiToolkitBottomAction = actionName;
+    clone.removeAttribute('id');
+    clone.addEventListener('click', () => {
+        scheduleMessageEditBottomActionScrollRestore(clone);
+    }, true);
+    return clone;
+}
+
+function scheduleMessageEditBottomActionScrollRestore(button) {
+    const snapshot = captureMessageEditBottomActionScrollSnapshot(button);
+    if (!snapshot) {
+        return;
+    }
+
+    const restore = () => {
+        restoreMessageEditBottomActionScroll(snapshot);
+    };
+
+    requestAnimationFrame(() => {
+        restore();
+        requestAnimationFrame(restore);
+    });
+
+    for (const delay of MESSAGE_EDIT_BOTTOM_ACTION_SCROLL_RESTORE_DELAYS) {
+        setTimeout(restore, delay);
+    }
+
+    installMessageEditBottomActionUpdatedRestore(snapshot, restore);
+}
+
+function captureMessageEditBottomActionScrollSnapshot(button) {
+    const chat = document.querySelector('#chat');
+    const message = button instanceof HTMLElement ? button.closest('.mes[mesid]') : null;
+
+    if (!(chat instanceof HTMLElement) || !(message instanceof HTMLElement)) {
+        return null;
+    }
+
+    const chatRect = chat.getBoundingClientRect();
+    const messageRect = message.getBoundingClientRect();
+    return {
+        messageId: message.getAttribute('mesid'),
+        bottomInChat: messageRect.bottom - chatRect.top,
+    };
+}
+
+function installMessageEditBottomActionUpdatedRestore(snapshot, restore) {
+    if (typeof eventSource?.on !== 'function' || !event_types.MESSAGE_UPDATED) {
+        return;
+    }
+
+    let cleanupTimer = null;
+    const cleanup = () => {
+        clearTimeout(cleanupTimer);
+        eventSource.removeListener?.(event_types.MESSAGE_UPDATED, updatedHandler);
+    };
+    const updatedHandler = (messageId) => {
+        if (String(messageId) !== String(snapshot.messageId)) {
+            return;
+        }
+
+        cleanup();
+        restore();
+        setTimeout(restore, 0);
+        setTimeout(restore, 50);
+        setTimeout(restore, 160);
+    };
+
+    eventSource.on(event_types.MESSAGE_UPDATED, updatedHandler);
+    cleanupTimer = setTimeout(cleanup, 5000);
+}
+
+function restoreMessageEditBottomActionScroll(snapshot) {
+    const chat = document.querySelector('#chat');
+    if (!(chat instanceof HTMLElement) || snapshot?.messageId == null) {
+        return;
+    }
+
+    const messageId = escapeMessageEditBottomActionSelectorValue(String(snapshot.messageId));
+    const message = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+    if (!(message instanceof HTMLElement)) {
+        return;
+    }
+
+    const chatRect = chat.getBoundingClientRect();
+    const messageRect = message.getBoundingClientRect();
+    const currentBottomInChat = messageRect.bottom - chatRect.top;
+    const delta = currentBottomInChat - Number(snapshot.bottomInChat);
+
+    if (Math.abs(delta) > 1) {
+        chat.scrollTop += delta;
+    }
+}
+
+function escapeMessageEditBottomActionSelectorValue(value) {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+        return CSS.escape(value);
+    }
+
+    return value.replace(/["\\]/g, '\\$&');
+}
+
+function ensureMessageEditBottomActionsStyle() {
+    let style = document.getElementById(MESSAGE_EDIT_BOTTOM_ACTIONS_STYLE_ID);
+    if (!style) {
+        style = document.createElement('style');
+        style.id = MESSAGE_EDIT_BOTTOM_ACTIONS_STYLE_ID;
+        document.head.append(style);
+    }
+
+    style.textContent = `
+#chat .${MESSAGE_EDIT_BOTTOM_ACTIONS_CLASS} {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    margin-top: 8px;
+}
+
+#chat .${MESSAGE_EDIT_BOTTOM_ACTIONS_CLASS} .menu_button {
+    flex: 0 0 auto;
+    opacity: 0.5;
+    padding: 0;
+    font-size: 1rem;
+    height: 2rem;
+    margin-top: 0;
+    margin-bottom: 0;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#chat .${MESSAGE_EDIT_BOTTOM_ACTIONS_CLASS} .menu_button:hover {
+    opacity: 1;
+}
+`;
+}
+
 function applyMobileAutoKeyboardSuppression() {
     patchMobileAutoKeyboardFocus();
     patchMobileAutoKeyboardJQueryFocus();
@@ -4055,6 +4360,18 @@ function initializeMessageCompletionSoundControls(persistSettings) {
             applyMessageCompletionSound();
         });
 
+    $('#bai_bai_toolkit_message_completion_sound_keep_alive_enabled')
+        .prop('checked', settings.messageCompletionSoundKeepAliveEnabled !== false)
+        .off('input.baiBaiToolkitMessageSound')
+        .on('input.baiBaiToolkitMessageSound', function () {
+            settings.messageCompletionSoundKeepAliveEnabled = Boolean($(this).prop('checked'));
+            persistSettings?.();
+            syncMessageCompletionSoundKeepAliveHandlers();
+            if (!isMessageCompletionSoundKeepAliveEnabled()) {
+                stopMessageCompletionSoundKeepAlive();
+            }
+        });
+
     $('#bai_bai_toolkit_message_completion_sound_source')
         .val(getMessageCompletionSoundSource())
         .off('change.baiBaiToolkitMessageSound')
@@ -4189,6 +4506,7 @@ function normalizeMessageCompletionSoundSettings() {
     settings.messageCompletionSoundLocalFileName = typeof settings.messageCompletionSoundLocalFileName === 'string'
         ? settings.messageCompletionSoundLocalFileName
         : '';
+    settings.messageCompletionSoundKeepAliveEnabled = settings.messageCompletionSoundKeepAliveEnabled !== false;
 }
 
 function populateMessageCompletionSoundBuiltinOptions() {
@@ -4206,6 +4524,8 @@ function updateMessageCompletionSoundControls() {
     const source = getMessageCompletionSoundSource();
     $('#bai_bai_toolkit_message_completion_sound_enabled')
         .prop('checked', Boolean(settings.messageCompletionSoundEnabled));
+    $('#bai_bai_toolkit_message_completion_sound_keep_alive_enabled')
+        .prop('checked', settings.messageCompletionSoundKeepAliveEnabled !== false);
     $('#bai_bai_toolkit_message_completion_sound_source').val(source);
     $('#bai_bai_toolkit_message_completion_sound_builtin_id').val(getMessageCompletionSoundBuiltin().id);
     $('#bai_bai_toolkit_message_completion_sound_url').val(settings.messageCompletionSoundUrl || '');
@@ -4266,6 +4586,7 @@ function getMessageCompletionSoundState() {
 function applyMessageCompletionSound() {
     if (settings.messageCompletionSoundEnabled) {
         installMessageCompletionSoundHandlers();
+        syncMessageCompletionSoundKeepAliveHandlers();
     } else {
         removeMessageCompletionSoundHandlers();
     }
@@ -4280,11 +4601,15 @@ function installMessageCompletionSoundHandlers() {
     const generationStartedHandler = () => {
         state.generationActive = true;
         state.generationStopped = false;
+        startMessageCompletionSoundKeepAlive().catch(error => {
+            console.debug(`${LOG_PREFIX} Failed to start message completion sound keep-alive`, error);
+        });
     };
     const generationStoppedHandler = () => {
         if (state.generationActive) {
             state.generationStopped = true;
         }
+        stopMessageCompletionSoundKeepAlive();
     };
     const generationEndedHandler = () => {
         const shouldPlay = state.generationActive && !state.generationStopped;
@@ -4292,11 +4617,14 @@ function installMessageCompletionSoundHandlers() {
         state.generationStopped = false;
 
         if (!shouldPlay) {
+            stopMessageCompletionSoundKeepAlive();
             return;
         }
 
         playSelectedMessageCompletionSound().catch(error => {
             console.debug(`${LOG_PREFIX} Failed to play message completion sound`, error);
+        }).finally(() => {
+            stopMessageCompletionSoundKeepAlive();
         });
     };
 
@@ -4304,6 +4632,7 @@ function installMessageCompletionSoundHandlers() {
     addMessageCompletionSoundEventHandler(event_types.GENERATION_STOPPED, generationStoppedHandler);
     addMessageCompletionSoundEventHandler(event_types.GENERATION_ENDED, generationEndedHandler);
     state.installed = true;
+    syncMessageCompletionSoundKeepAliveHandlers();
 }
 
 function addMessageCompletionSoundEventHandler(event, handler) {
@@ -4326,7 +4655,152 @@ function removeMessageCompletionSoundHandlers() {
     state.installed = false;
     state.generationActive = false;
     state.generationStopped = false;
+    removeMessageCompletionSoundKeepAliveHandlers();
+    stopMessageCompletionSoundKeepAlive();
     resetMessageCompletionSoundAudio();
+}
+
+function isMessageCompletionSoundKeepAliveEnabled() {
+    return Boolean(
+        settings.messageCompletionSoundEnabled
+        && settings.messageCompletionSoundKeepAliveEnabled !== false
+        && isMobile()
+    );
+}
+
+function syncMessageCompletionSoundKeepAliveHandlers() {
+    if (isMessageCompletionSoundKeepAliveEnabled()) {
+        installMessageCompletionSoundKeepAliveHandlers();
+        const state = getMessageCompletionSoundState();
+        if (state.generationActive && !state.generationStopped) {
+            startMessageCompletionSoundKeepAlive().catch(error => {
+                console.debug(`${LOG_PREFIX} Failed to start message completion sound keep-alive`, error);
+            });
+        }
+    } else {
+        removeMessageCompletionSoundKeepAliveHandlers();
+        stopMessageCompletionSoundKeepAlive();
+    }
+}
+
+function installMessageCompletionSoundKeepAliveHandlers() {
+    const state = getMessageCompletionSoundState();
+    if (state.keepAliveInteractionHandlersInstalled) {
+        return;
+    }
+
+    const unlockHandler = () => {
+        unlockMessageCompletionSoundKeepAlive().catch(error => {
+            console.debug(`${LOG_PREFIX} Failed to unlock message completion sound keep-alive`, error);
+        });
+    };
+    const passiveCaptureOptions = { capture: true, passive: true };
+    const keydownOptions = { capture: true };
+    state.keepAliveInteractionHandlers = [
+        { target: document, event: 'pointerdown', handler: unlockHandler, options: passiveCaptureOptions },
+        { target: document, event: 'touchstart', handler: unlockHandler, options: passiveCaptureOptions },
+        { target: document, event: 'click', handler: unlockHandler, options: passiveCaptureOptions },
+        { target: document, event: 'keydown', handler: unlockHandler, options: keydownOptions },
+    ];
+
+    for (const entry of state.keepAliveInteractionHandlers) {
+        entry.target.addEventListener(entry.event, entry.handler, entry.options);
+    }
+
+    state.keepAliveInteractionHandlersInstalled = true;
+}
+
+function removeMessageCompletionSoundKeepAliveHandlers() {
+    const state = getMessageCompletionSoundState();
+    for (const entry of state.keepAliveInteractionHandlers || []) {
+        entry.target.removeEventListener(entry.event, entry.handler, entry.options);
+    }
+
+    state.keepAliveInteractionHandlers = [];
+    state.keepAliveInteractionHandlersInstalled = false;
+    state.keepAliveUnlocking = false;
+}
+
+async function unlockMessageCompletionSoundKeepAlive() {
+    const state = getMessageCompletionSoundState();
+    if (!isMessageCompletionSoundKeepAliveEnabled() || state.keepAliveUnlocked || state.keepAliveUnlocking || state.keepAlivePlaying) {
+        return false;
+    }
+
+    state.keepAliveUnlocking = true;
+    try {
+        const audio = getMessageCompletionSoundKeepAliveAudio();
+        resetMessageCompletionSoundKeepAliveTime(audio);
+        await audio.play();
+        audio.pause();
+        resetMessageCompletionSoundKeepAliveTime(audio);
+        state.keepAliveUnlocked = true;
+        return true;
+    } finally {
+        state.keepAliveUnlocking = false;
+    }
+}
+
+async function startMessageCompletionSoundKeepAlive() {
+    const state = getMessageCompletionSoundState();
+    if (!isMessageCompletionSoundKeepAliveEnabled()) {
+        return false;
+    }
+
+    const audio = getMessageCompletionSoundKeepAliveAudio();
+    if (state.keepAlivePlaying && !audio.paused) {
+        return true;
+    }
+
+    state.keepAliveRequested = true;
+
+    try {
+        resetMessageCompletionSoundKeepAliveTime(audio);
+        await audio.play();
+        state.keepAlivePlaying = true;
+        state.keepAliveUnlocked = true;
+        return true;
+    } catch (error) {
+        state.keepAlivePlaying = false;
+        state.keepAliveLastErrorAt = Date.now();
+        setMessageCompletionSoundStatus('静音保活启动失败，浏览器可能限制了自动播放。', true);
+        throw error;
+    }
+}
+
+function stopMessageCompletionSoundKeepAlive() {
+    const state = getMessageCompletionSoundState();
+    const audio = state.keepAliveAudio;
+    if (audio instanceof HTMLAudioElement) {
+        audio.pause();
+        resetMessageCompletionSoundKeepAliveTime(audio);
+    }
+
+    state.keepAliveRequested = false;
+    state.keepAlivePlaying = false;
+}
+
+function resetMessageCompletionSoundKeepAliveTime(audio) {
+    try {
+        audio.currentTime = 0;
+    } catch {
+        // Some mobile browsers reject currentTime writes while media is not ready.
+    }
+}
+
+function getMessageCompletionSoundKeepAliveAudio() {
+    const state = getMessageCompletionSoundState();
+    if (!(state.keepAliveAudio instanceof HTMLAudioElement)) {
+        const audio = new Audio(MESSAGE_COMPLETION_SOUND_KEEP_ALIVE_SRC);
+        audio.loop = true;
+        audio.muted = false;
+        audio.volume = 1;
+        audio.preload = 'auto';
+        audio.setAttribute('playsinline', '');
+        state.keepAliveAudio = audio;
+    }
+
+    return state.keepAliveAudio;
 }
 
 async function playSelectedMessageCompletionSound({ preview = false } = {}) {
@@ -5158,6 +5632,7 @@ export {
     applyLongChatDomRenderOptimization,
     applyMessageCompletionScrollToMiddle,
     applyMessageCompletionSound,
+    applyMessageEditBottomActions,
     applyMessageTripleClickEdit,
     applyMobileAutoKeyboardSuppression,
     applyMobileMessageEditScrollGuard,
