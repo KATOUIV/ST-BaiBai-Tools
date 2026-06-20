@@ -16,6 +16,7 @@ import { isMobile } from '../../../RossAscends-mods.js';
 import { timestampToMoment } from '../../../utils.js';
 
 const FAST_CHAT_SEARCH_FETCH_KEY = '__baiBaiToolkitFastChatSearchFetchPatched';
+const BAIBAOKU_FAST_SEARCH_URL = '/api/plugins/baibaoku/v1/chats/fast-search';
 const FAST_CHAT_LIST_SCROLL_STYLE_ID = 'bai_bai_toolkit_fast_chat_list_scroll_style';
 const LONG_CHAT_DOM_RENDER_STYLE_ID = 'bai_bai_toolkit_long_chat_dom_render_style';
 const MESSAGE_EDIT_BOTTOM_ACTIONS_STYLE_ID = 'bai_bai_toolkit_message_edit_bottom_actions_style';
@@ -940,11 +941,17 @@ function refreshLongChatDomRenderOptimization({ reason = '', mode = 'full', mess
     state.tailMessageIds = getLongChatDomRenderMessageIdsFromElements(uncontainedTailMessages);
     state.optimized = shouldOptimize;
     const chatWidth = chatElement.clientWidth || window.innerWidth;
+    // 先做一次性的“读”:把本轮所有可能需要测量的元素的高度集中测量,
+    // 之后的循环只“写”(setProperty/classList/cleanup),不再穿插同步读,
+    // 从而把逐条强制重排收敛为单次重排。
+    const measuredHeights = shouldOptimize
+        ? batchMeasureLongChatDomRenderHeights(messages, editingMessages)
+        : new Map();
     for (const element of messages) {
         const mesId = element.getAttribute('mesid') || '';
         const record = state.messageRecords.get(mesId) || null;
         if (shouldOptimize && !uncontainedTailMessages.has(element)) {
-            applyLongChatDomRenderToMessage(element, chat, refreshStats, { editingMessages, chatWidth, record });
+            applyLongChatDomRenderToMessage(element, chat, refreshStats, { editingMessages, chatWidth, record, measuredHeights });
             observeLongChatDomRenderMessage(element, record, state);
         } else {
             if (shouldOptimize && uncontainedTailMessages.has(element)) {
@@ -954,7 +961,7 @@ function refreshLongChatDomRenderOptimization({ reason = '', mode = 'full', mess
             unobserveLongChatDomRenderMessage(element, record, state);
         }
     }
-    updateLongChatDomRenderRoleHeightEstimators(state, uncontainedTailMessages, chat, chatWidth);
+    updateLongChatDomRenderRoleHeightEstimators(state, uncontainedTailMessages, chat, chatWidth, measuredHeights);
 
     if (!shouldOptimize && state.generationAnchorEnabled) {
         state.generationAnchorEnabled = false;
@@ -1020,6 +1027,17 @@ function refreshLongChatDomRenderIncremental({ state, chatElement, chat, reason 
 
     const editingMessages = getLongChatDomRenderEditingMessages(chatElement);
     const chatWidth = chatElement.clientWidth || window.innerWidth;
+    // 同 full 模式:先集中测量,再统一写,避免读写交错触发的逐条强制重排。
+    const touchedElements = [];
+    for (const mesId of touchedMessageIds) {
+        const element = state.messageRecords.get(mesId)?.element;
+        if (element instanceof HTMLElement) {
+            touchedElements.push(element);
+        }
+    }
+    const measuredHeights = shouldOptimize
+        ? batchMeasureLongChatDomRenderHeights(touchedElements, editingMessages)
+        : new Map();
     for (const mesId of touchedMessageIds) {
         const record = state.messageRecords.get(mesId);
         if (!record?.element?.isConnected) {
@@ -1027,7 +1045,7 @@ function refreshLongChatDomRenderIncremental({ state, chatElement, chat, reason 
         }
 
         if (shouldOptimize && !nextTailMessageIds.has(mesId)) {
-            applyLongChatDomRenderToMessage(record.element, chat, refreshStats, { editingMessages, chatWidth, record });
+            applyLongChatDomRenderToMessage(record.element, chat, refreshStats, { editingMessages, chatWidth, record, measuredHeights });
             observeLongChatDomRenderMessage(record.element, record, state);
         } else {
             if (shouldOptimize && nextTailMessageIds.has(mesId)) {
@@ -1037,7 +1055,7 @@ function refreshLongChatDomRenderIncremental({ state, chatElement, chat, reason 
             unobserveLongChatDomRenderMessage(record.element, record, state);
         }
     }
-    updateLongChatDomRenderRoleHeightEstimatorsForIds(state, chatElement, nextTailMessageIds, chat, chatWidth);
+    updateLongChatDomRenderRoleHeightEstimatorsForIds(state, chatElement, nextTailMessageIds, chat, chatWidth, measuredHeights);
 
     state.tailMessageIds = nextTailMessageIds;
 
@@ -1067,7 +1085,7 @@ function logLongChatDomRenderRefresh(stats, mode = 'full') {
     console.info(`${LOG_PREFIX} longdom mode=${mode} reason=${stats?.reason || 'refresh'} duration=${duration.toFixed(1)}ms messages=${stats?.messages || 0} optimized=${stats?.optimized ? 'yes' : 'no'} contained=${stats?.contained || 0} tail=${stats?.tail || 0} cached=${stats?.cached || 0} estimated=${stats?.estimated || 0} measured=${stats?.measured || 0} skipped=${stats?.skipped || 0}`);
 }
 
-function updateLongChatDomRenderRoleHeightEstimatorsForIds(state, chatElement, messageIds, chat, width) {
+function updateLongChatDomRenderRoleHeightEstimatorsForIds(state, chatElement, messageIds, chat, width, measuredHeights = null) {
     if (isLongChatDomRenderGenerationActive()) {
         return;
     }
@@ -1085,10 +1103,10 @@ function updateLongChatDomRenderRoleHeightEstimatorsForIds(state, chatElement, m
         }
     }
 
-    updateLongChatDomRenderRoleHeightEstimators(state, elements, chat, width);
+    updateLongChatDomRenderRoleHeightEstimators(state, elements, chat, width, measuredHeights);
 }
 
-function updateLongChatDomRenderRoleHeightEstimators(state, elements, chat, width = window.innerWidth) {
+function updateLongChatDomRenderRoleHeightEstimators(state, elements, chat, width = window.innerWidth, measuredHeights = null) {
     if (isLongChatDomRenderGenerationActive()) {
         return;
     }
@@ -1096,6 +1114,8 @@ function updateLongChatDomRenderRoleHeightEstimators(state, elements, chat, widt
     if (!state || !Array.isArray(chat)) {
         return;
     }
+
+    const hasMeasuredHeights = measuredHeights instanceof Map;
 
     for (const element of elements || []) {
         if (!(element instanceof HTMLElement)
@@ -1111,7 +1131,9 @@ function updateLongChatDomRenderRoleHeightEstimators(state, elements, chat, widt
         }
 
         const message = chat[index] || null;
-        const actualHeight = measureLongChatDomRenderMessageHeight(element);
+        const actualHeight = hasMeasuredHeights
+            ? Number(measuredHeights.get(element) || 0)
+            : measureLongChatDomRenderMessageHeight(element);
         if (actualHeight < 24) {
             continue;
         }
@@ -1449,9 +1471,12 @@ function applyLongChatDomRenderToMessage(element, chat, refreshStats = null, opt
         return;
     }
 
+    const hasMeasuredHeights = options.measuredHeights instanceof Map;
     const measuredHeight = element.classList.contains('bai-bai-toolkit-long-chat-contained') || isLongChatDomRenderGenerationActive()
         ? 0
-        : measureLongChatDomRenderMessageHeight(element);
+        : (hasMeasuredHeights
+            ? Number(options.measuredHeights.get(element) || 0)
+            : measureLongChatDomRenderMessageHeight(element));
     const cachedHeight = getLongChatDomRenderCachedHeight(mesId);
     const estimatedHeight = estimateLongChatDomRenderMessageHeight(chars, options.chatWidth, role);
     const height = measuredHeight || cachedHeight || estimatedHeight;
@@ -1564,6 +1589,35 @@ function measureLongChatDomRenderMessageHeight(element) {
     const height = Math.max(rectHeight, Number(element.offsetHeight || 0));
 
     return height >= 24 ? Math.round(height) : 0;
+}
+
+// 批量测量:把所有需要 getBoundingClientRect/offsetHeight 的“读”集中在一起执行,
+// 避免与后续写样式(setProperty/classList)交错触发逐条强制重排(layout thrashing)。
+// 测量条件必须与 applyLongChatDomRenderToMessage 内的判断保持一致。
+function batchMeasureLongChatDomRenderHeights(elements, editingMessages) {
+    const measuredHeights = new Map();
+    if (isLongChatDomRenderGenerationActive()) {
+        return measuredHeights;
+    }
+
+    for (const element of elements || []) {
+        if (!(element instanceof HTMLElement)) {
+            continue;
+        }
+        if (editingMessages?.has?.(element)) {
+            continue;
+        }
+        if (element.classList.contains('bai-bai-toolkit-long-chat-contained')) {
+            continue;
+        }
+
+        const height = measureLongChatDomRenderMessageHeight(element);
+        if (height >= 24) {
+            measuredHeights.set(element, height);
+        }
+    }
+
+    return measuredHeights;
 }
 
 function updateLongChatDomRenderHeightCache(target, observedHeight) {
@@ -4025,9 +4079,19 @@ function patchFastChatSearchFetch() {
 
         if (requestData) {
             try {
-                return await fetchFastCharacterChatList(originalFetch, requestData);
+                return await fetchFastSearchList(originalFetch, requestData);
             } catch (error) {
-                console.debug(`${LOG_PREFIX} Fast chat list path failed; falling back to /api/chats/search`, error);
+                console.debug(`${LOG_PREFIX} Backend fast-search path failed; trying legacy fast path`, error);
+
+                // The legacy fast path only covers character chats. Group chats fall
+                // straight back to the original /api/chats/search below.
+                if (requestData.avatarUrl) {
+                    try {
+                        return await fetchFastCharacterChatList(originalFetch, { avatarUrl: requestData.avatarUrl });
+                    } catch (legacyError) {
+                        console.debug(`${LOG_PREFIX} Legacy fast chat list path failed; falling back to /api/chats/search`, legacyError);
+                    }
+                }
             }
         }
 
@@ -4064,11 +4128,21 @@ async function getFastChatSearchRequestData(input, init) {
     const avatarUrl = body.avatar_url;
     const groupId = body.group_id;
 
-    if (query.trim().length !== 0 || groupId || typeof avatarUrl !== 'string' || avatarUrl.length === 0) {
+    if (query.trim().length !== 0) {
         return null;
     }
 
-    return { avatarUrl };
+    const hasAvatar = typeof avatarUrl === 'string' && avatarUrl.length > 0;
+    const hasGroup = typeof groupId === 'string' && groupId.length > 0;
+
+    if (!hasAvatar && !hasGroup) {
+        return null;
+    }
+
+    return {
+        avatarUrl: hasAvatar ? avatarUrl : undefined,
+        groupId: hasGroup ? groupId : undefined,
+    };
 }
 
 function isChatSearchUrl(input) {
@@ -4097,6 +4171,42 @@ async function readJsonRequestBody(input, init) {
     }
 
     return null;
+}
+
+async function fetchFastSearchList(fetchFn, { avatarUrl, groupId }) {
+    const requestBody = { query: '' };
+
+    if (groupId) {
+        requestBody.group_id = groupId;
+    } else {
+        requestBody.avatar_url = avatarUrl;
+    }
+
+    const response = await fetchFn(BAIBAOKU_FAST_SEARCH_URL, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+        throw new Error(`Unexpected status ${response.status}`);
+    }
+
+    const results = await response.json();
+
+    if (!Array.isArray(results)) {
+        throw new Error('fast-search returned a non-array payload');
+    }
+
+    // Backend fast-search returns the complete payload in one shot, matching ST's
+    // /api/chats/search response shape, so no placeholder/hydrate pass is needed.
+    // ST sorts the results itself (see script.js search consumer), so return as-is.
+    return new Response(JSON.stringify(results), {
+        status: 200,
+        headers: {
+            'Content-Type': 'application/json',
+        },
+    });
 }
 
 async function fetchFastCharacterChatList(fetchFn, { avatarUrl }) {
