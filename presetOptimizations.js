@@ -5154,6 +5154,8 @@ function renderPresetVuePromptListSeparator(h) {
 function renderPresetVuePromptDraggable(h, vueDraggableNext, model) {
     const handleSelector = getPresetVuePromptDragHandleSelector();
     const dragLocked = isPresetVuePromptDragLocked();
+    const rangeSelecting = Boolean(model?.rangeSelection?.active);
+    const dragDisabled = dragLocked || rangeSelecting;
     const draggableProps = {
         tag: 'ul',
         id: PRESET_PROMPT_MANAGER_LIST_SELECTOR.slice(1),
@@ -5164,14 +5166,14 @@ function renderPresetVuePromptDraggable(h, vueDraggableNext, model) {
         list: model.items,
         group: {
             name: 'bai-bai-preset-prompts',
-            pull: !dragLocked,
-            put: dragLocked ? false : canPutPresetVuePromptIntoTopLevelList,
+            pull: !dragDisabled,
+            put: dragDisabled ? false : canPutPresetVuePromptIntoTopLevelList,
         },
         draggable: PRESET_VUE_TOP_LEVEL_DRAGGABLE_SELECTOR,
         filter: PRESET_DRAG_INTERACTIVE_SELECTOR,
         preventOnFilter: false,
         sort: false,
-        disabled: dragLocked,
+        disabled: dragDisabled,
         animation: 0,
         emptyInsertThreshold: PRESET_VUE_EMPTY_INSERT_THRESHOLD_PX,
         dragoverBubble: false,
@@ -6555,6 +6557,8 @@ function renderPresetVuePromptGroup(h, vueDraggableNext, item) {
     const handleSelector = getPresetVuePromptDragHandleSelector();
     const groupEnabled = isPresetVuePromptGroupEnabled(item);
     const dragLocked = isPresetVuePromptDragLocked();
+    const rangeSelecting = Boolean(getPresetVuePromptListManagerState().state?.rangeSelection?.active);
+    const dragDisabled = dragLocked || rangeSelecting;
     const draggableProps = {
         tag: 'ul',
         class: [
@@ -6564,14 +6568,14 @@ function renderPresetVuePromptGroup(h, vueDraggableNext, item) {
         list: item.children,
         group: {
             name: 'bai-bai-preset-prompts',
-            pull: !dragLocked,
-            put: dragLocked ? false : canPutPresetVuePromptIntoGroupList,
+            pull: !dragDisabled,
+            put: dragDisabled ? false : canPutPresetVuePromptIntoGroupList,
         },
         draggable: 'li.completion_prompt_manager_prompt_draggable',
         filter: PRESET_DRAG_INTERACTIVE_SELECTOR,
         preventOnFilter: false,
         sort: false,
-        disabled: dragLocked,
+        disabled: dragDisabled,
         animation: 0,
         emptyInsertThreshold: PRESET_VUE_EMPTY_INSERT_THRESHOLD_PX,
         dragoverBubble: true,
@@ -7142,6 +7146,10 @@ function configurePresetVueSortableDragDelayForEvent(event) {
     }
 
     if (isPresetVuePromptDragLocked()) {
+        return;
+    }
+
+    if (getPresetVuePromptListManagerState().state?.rangeSelection?.active) {
         return;
     }
 
@@ -8591,25 +8599,9 @@ async function startPresetVuePromptGroupRangeSelection(model, { startId = null }
         return;
     }
 
-    const name = await callGenericPopup(t`预设分组名称`, POPUP_TYPE.INPUT, '', {
-        okButton: t`保存`,
-        cancelButton: t`取消`,
-    });
-
-    if (typeof name !== 'string') {
-        return;
-    }
-
-    const trimmedName = name.trim();
-
-    if (!trimmedName) {
-        toastr.warning(t`分组名称不能为空。`);
-        return;
-    }
-
     model.rangeSelection = {
         active: true,
-        name: trimmedName,
+        name: '',
         startId,
         endId: null,
         hoverId: startId,
@@ -8640,6 +8632,10 @@ function handlePresetVuePromptRangeSelectionClick(model, item, event) {
     event.preventDefault?.();
     event.stopPropagation?.();
     event.stopImmediatePropagation?.();
+
+    if (model.rangeSelection.endId) {
+        return;
+    }
 
     if (!model.rangeSelection.startId) {
         model.rangeSelection.startId = item.id;
@@ -8676,9 +8672,24 @@ async function finishPresetVuePromptGroupRangeSelection(model) {
         return;
     }
 
-    const confirmed = await callGenericPopup(t`要用选中的预设条目创建分组吗？`, POPUP_TYPE.CONFIRM);
+    const name = await callGenericPopup(t`预设分组名称`, POPUP_TYPE.INPUT, model.rangeSelection?.name || '', {
+        okButton: t`创建分组`,
+        cancelButton: t`取消`,
+    });
 
-    if (!confirmed) {
+    if (!model?.rangeSelection?.active) {
+        return;
+    }
+
+    if (typeof name !== 'string') {
+        model.rangeSelection.endId = null;
+        return;
+    }
+
+    const trimmedName = name.trim();
+
+    if (!trimmedName) {
+        toastr.warning(t`分组名称不能为空。`);
         model.rangeSelection.endId = null;
         return;
     }
@@ -8686,9 +8697,10 @@ async function finishPresetVuePromptGroupRangeSelection(model) {
     const groupState = getPresetPromptGroupState();
     normalizePresetPromptGroupState(groupState, new Set(getPresetVuePromptFlatIds(model)));
     const groupId = uuidv4();
+    model.rangeSelection.name = trimmedName;
     groupState.groups.push({
         id: groupId,
-        name: model.rangeSelection.name,
+        name: trimmedName,
         order: groupState.groups.length,
         collapsed: false,
         enabled: true,
@@ -9113,6 +9125,14 @@ function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false
         text: t`添加到全局库`,
         onClick: event => handlePresetPromptActionButtonClick(event),
     });
+    const groupRangeButton = isPresetGroupingEnabled()
+        ? renderPresetVuePromptActionButton(h, {
+            action: 'group-range',
+            icon: 'fa-folder-plus',
+            text: t`以此条目创建分组`,
+            onClick: event => handlePresetPromptActionButtonClick(event),
+        })
+        : null;
 
     if (favoriteMirror) {
         return [
@@ -9146,6 +9166,7 @@ function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false
         }),
         h('span', { class: 'bai-bai-preset-prompt-actions' }, [
             favoriteToggle,
+            groupRangeButton,
             globalLibraryButton,
             canDelete
                 ? renderPresetVuePromptActionButton(h, {
@@ -11460,6 +11481,21 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
         event.stopImmediatePropagation?.();
         closePresetPromptActionMenus();
         void addPresetPromptToGlobalLibrary(promptId);
+        return;
+    }
+
+    if (presetAction === 'group-range') {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        event.stopImmediatePropagation?.();
+        closePresetPromptActionMenus();
+
+        if (!isPresetGroupingEnabled()) {
+            toastr.warning(t`请先开启预设分组。`);
+            return;
+        }
+
+        void startPresetVuePromptGroupRangeSelection(getPresetVuePromptListManagerState().state, { startId: promptId });
         return;
     }
 
