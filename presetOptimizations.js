@@ -2946,6 +2946,11 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     word-break: break-word !important;
 }
 
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} li.completion_prompt_manager_prompt.bai-bai-preset-prompt-actions-open .completion_prompt_manager_prompt_name {
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} li.completion_prompt_manager_prompt .prompt-manager-inspect-action {
     display: inline;
     min-width: 0;
@@ -3020,13 +3025,26 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
 
 #completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} .bai-bai-preset-prompt-actions {
     display: none !important;
+    position: absolute !important;
+    inset-inline-end: calc(100% + 4px) !important;
+    inset-block-start: 50% !important;
+    transform: translateY(-50%) !important;
+    z-index: 8 !important;
     align-items: center !important;
     justify-content: flex-end !important;
     flex-direction: row !important;
     flex-wrap: nowrap !important;
     gap: 4px !important;
     flex: 0 0 auto !important;
-    min-inline-size: max-content !important;
+    inline-size: max-content !important;
+    min-inline-size: 0 !important;
+    max-inline-size: calc(100vw - 48px) !important;
+    box-sizing: border-box !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
     white-space: nowrap !important;
     opacity: 0;
     transition: opacity var(--animation-duration-2x, 160ms) ease-in-out;
@@ -9125,7 +9143,7 @@ function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false
         text: t`添加到全局库`,
         onClick: event => handlePresetPromptActionButtonClick(event),
     });
-    const groupRangeButton = isPresetGroupingEnabled()
+    const groupRangeButton = isPresetGroupingEnabled() && !item.groupId
         ? renderPresetVuePromptActionButton(h, {
             action: 'group-range',
             icon: 'fa-folder-plus',
@@ -11495,6 +11513,16 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
             return;
         }
 
+        if (!promptId) {
+            toastr.warning(t`没有找到要作为起点的预设条目。`);
+            return;
+        }
+
+        if (isPresetPromptAssignedToExistingGroup(promptId)) {
+            toastr.warning(t`分组内条目暂不支持再次创建分组。`);
+            return;
+        }
+
         void startPresetVuePromptGroupRangeSelection(getPresetVuePromptListManagerState().state, { startId: promptId });
         return;
     }
@@ -11896,6 +11924,17 @@ function getPresetPromptIdFromAction(action) {
     return row?.dataset?.pmIdentifier || null;
 }
 
+function isPresetPromptAssignedToExistingGroup(promptId) {
+    if (!promptId) {
+        return false;
+    }
+
+    const groupState = getPresetPromptGroupState();
+    const groupId = groupState.prompts?.[promptId]?.groupId;
+
+    return Boolean(groupId && groupState.groups?.some(group => group?.id === groupId));
+}
+
 function togglePresetPromptActionMenu(button) {
     const wrapper = button.closest('.prompt_manager_prompt_controls');
 
@@ -11913,6 +11952,7 @@ function togglePresetPromptActionMenu(button) {
     closePresetPromptActionMenus({ except: wrapper });
     actions.classList.toggle('bai-bai-preset-prompt-actions-visible', !wasOpen);
     wrapper.querySelector('.bai-bai-preset-prompt-actions-hint')?.classList.toggle('bai-bai-preset-prompt-actions-hint-hidden', !wasOpen);
+    wrapper.closest('li.completion_prompt_manager_prompt')?.classList.toggle('bai-bai-preset-prompt-actions-open', !wasOpen);
 }
 
 function closePresetPromptActionMenus({ except = null } = {}) {
@@ -11925,6 +11965,7 @@ function closePresetPromptActionMenus({ except = null } = {}) {
 
         actions.classList.remove('bai-bai-preset-prompt-actions-visible');
         wrapper?.querySelector('.bai-bai-preset-prompt-actions-hint')?.classList.remove('bai-bai-preset-prompt-actions-hint-hidden');
+        wrapper?.closest('li.completion_prompt_manager_prompt')?.classList.remove('bai-bai-preset-prompt-actions-open');
     });
 }
 
