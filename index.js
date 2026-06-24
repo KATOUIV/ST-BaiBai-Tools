@@ -23,7 +23,7 @@ import { sendMessageAs } from '../../../slash-commands.js';
 import { isAdmin } from '../../../user.js';
 import { debounce, download, getCharaFilename, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4 } from '../../../utils.js';
 import { getCurrentPresetAPI as getRegexCurrentPresetAPI, getCurrentPresetName as getRegexCurrentPresetName, getScriptsByType as getRegexScriptsByType, runRegexScript, SCRIPT_TYPES as REGEX_SCRIPT_TYPES, substitute_find_regex } from '../../regex/engine.js';
-const CURRENT_VERSION = '0.27.8';
+const CURRENT_VERSION = '0.27.9';
 const LOCAL_ASSET_VERSION = getLocalAssetVersion(CURRENT_VERSION);
 const { SaveGenerateDisplay } = await importVersionedLocalModule('./saveGenerateDisplay.js');
 const chatOptimizations = await importVersionedLocalModule('./chatOptimizations.js');
@@ -13508,6 +13508,20 @@ function watchLocalSaveGenerateTerminalStatus(state, jobId) {
             const status = String(job?.status || '');
             if (status === 'failed' || status === 'canceled') {
                 markSaveGenerateJobSeen(job);
+                return;
+            }
+
+            // For a locally-owned job that finished generating, the current page
+            // received this reply itself. Once we can confirm the reply is already
+            // rendered in the open chat, mark it seen so a resume check fired in the
+            // window before ST's /api/chats/save — e.g. tab refocus on mobile —
+            // never re-inserts it as a "recovered" message (the duplicate bug).
+            // We intentionally do NOT mark seen when the message is absent: that is
+            // the page-closed-before-save case the recovery feature must still cover.
+            if (isSaveGenerateSavedStatus(status) && job?.id
+                && isCurrentSaveGenerateMessageAlreadyInserted({ id: job.id, ...job })) {
+                markSaveGenerateLocalJobConsumed(state, job.id);
+                markSaveGenerateJobSeen(job);
             }
         })
         .catch(error => {
@@ -13786,18 +13800,20 @@ async function runCurrentSaveGenerateJobCheck(state, chatId, reason = 'unknown',
 
         if (isSaveGenerateKnownLocalJob(state, job.id)) {
             const status = String(job.status || '');
-            if (status === 'completed') {
-                markSaveGenerateLocalJobConsumed(state, job.id);
-                console.debug(`${LOG_PREFIX} save-generate local completed job is no longer guarded; continuing recovery job=${job.id} (${reason})`);
-            } else if (isSaveGenerateTerminalStatus(status)) {
+            if (isSaveGenerateTerminalStatus(status) && status !== 'completed') {
                 markSaveGenerateLocalJobConsumed(state, job.id);
                 markSaveGenerateJobSeen(job);
                 console.debug(`${LOG_PREFIX} save-generate resume check skipped: job is owned by current page job=${job.id} (${reason})`);
                 return job;
-            } else {
-                console.debug(`${LOG_PREFIX} save-generate resume check skipped: job is owned by current page job=${job.id} (${reason})`);
-                return job;
             }
+
+            // For 'completed' (and still-running) local jobs the current page owns
+            // persistence through its own /api/chats/save flow. Re-inserting here would
+            // duplicate the reply ST is about to (or already did) save. If the page
+            // somehow never saves it, the local record ages out and a later resume
+            // check recovers it as a foreign job — so nothing is lost by skipping now.
+            console.debug(`${LOG_PREFIX} save-generate resume check skipped: job is owned by current page job=${job.id} status=${status} (${reason})`);
+            return job;
         }
 
         console.debug(`${LOG_PREFIX} save-generate resume check found job=${job.id} status=${job.status} reason=${reason}`);
