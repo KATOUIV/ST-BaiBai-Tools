@@ -16,6 +16,32 @@ const PRESET_PROMPT_CODEMIRROR_EDITOR_STYLE_ID = 'bai_bai_toolkit_preset_prompt_
 const PRESET_BACKUP_PREVIEW_UI_STYLE_ID = 'bai_bai_toolkit_preset_backup_preview_ui_style';
 const PRESET_SCROLL_STYLE_ID = 'bai_bai_toolkit_preset_scroll_style';
 const PRESET_DRAG_STYLE_ID = 'bai_bai_toolkit_preset_drag_style';
+const LINKED_PRESET_OPTIMIZATION_OPTIONS = [
+    {
+        key: 'presetScrollOptimizationEnabled',
+        selector: '#bai_bai_toolkit_preset_scroll_optimization_enabled',
+    },
+    {
+        key: 'presetDragOptimizationEnabled',
+        selector: '#bai_bai_toolkit_preset_drag_optimization_enabled',
+    },
+    {
+        key: 'presetMobileWholeRowDragEnabled',
+        selector: '#bai_bai_toolkit_preset_mobile_whole_row_drag_enabled',
+    },
+    {
+        key: 'presetSwitchOptimizationEnabled',
+        selector: '#bai_bai_toolkit_preset_switch_optimization_enabled',
+    },
+    {
+        key: 'presetToggleOptimizationEnabled',
+        selector: '#bai_bai_toolkit_preset_toggle_optimization_enabled',
+    },
+    {
+        key: 'presetGroupingEnabled',
+        selector: '#bai_bai_toolkit_preset_grouping_enabled',
+    },
+];
 const PRESET_BACKUP_PREVIEW_APP_KEY = '__baiBaiToolkitPresetBackupPreviewApp';
 const PRESET_BACKUP_PREVIEW_UI_KEY = '__baiBaiToolkitPresetBackupPreviewUi';
 const PRESET_DRAG_HANDLER_KEY = '__baiBaiToolkitPresetDragHandler';
@@ -215,57 +241,19 @@ export function bindPresetOptimizationSettings({ saveSettings } = {}) {
         }
     };
 
-    $('#bai_bai_toolkit_preset_scroll_optimization_enabled')
-        .prop('checked', settings.presetScrollOptimizationEnabled)
-        .on('input', function () {
-            settings.presetScrollOptimizationEnabled = Boolean($(this).prop('checked'));
-            persistSettings();
-            applyPresetScrollOptimization();
-        });
+    const bindLinkedPresetOptimizationOption = ({ key, selector }) => {
+        $(selector)
+            .prop('checked', settings[key] === true)
+            .on('input', function () {
+                const enabled = Boolean($(this).prop('checked'));
+                syncLinkedPresetOptimizationSettings(enabled);
+                syncLinkedPresetOptimizationCheckboxes(enabled);
+                persistSettings();
+                applyLinkedPresetOptimizationSettings();
+            });
+    };
 
-    $('#bai_bai_toolkit_preset_drag_optimization_enabled')
-        .prop('checked', settings.presetDragOptimizationEnabled)
-        .on('input', function () {
-            settings.presetDragOptimizationEnabled = Boolean($(this).prop('checked'));
-            persistSettings();
-            applyPresetDragOptimization();
-        });
-
-    $('#bai_bai_toolkit_preset_mobile_whole_row_drag_enabled')
-        .prop('checked', settings.presetMobileWholeRowDragEnabled)
-        .on('input', function () {
-            settings.presetMobileWholeRowDragEnabled = Boolean($(this).prop('checked'));
-            cancelPromptManagerCustomDragPending();
-            finishPromptManagerCustomDrag({ cancelled: true });
-            rebuildPresetVuePromptListDraggable();
-            persistSettings();
-            applyPresetDragOptimization();
-        });
-
-    $('#bai_bai_toolkit_preset_switch_optimization_enabled')
-        .prop('checked', settings.presetSwitchOptimizationEnabled)
-        .on('input', function () {
-            settings.presetSwitchOptimizationEnabled = Boolean($(this).prop('checked'));
-            persistSettings();
-            applyPresetSwitchOptimization();
-        });
-
-    $('#bai_bai_toolkit_preset_toggle_optimization_enabled')
-        .prop('checked', settings.presetToggleOptimizationEnabled)
-        .on('input', function () {
-            settings.presetToggleOptimizationEnabled = Boolean($(this).prop('checked'));
-            persistSettings();
-            applyPresetToggleOptimization();
-            applyPresetSaveOptimization();
-        });
-
-    $('#bai_bai_toolkit_preset_grouping_enabled')
-        .prop('checked', settings.presetGroupingEnabled !== false)
-        .on('input', function () {
-            settings.presetGroupingEnabled = Boolean($(this).prop('checked'));
-            persistSettings();
-            applyPresetGrouping();
-        });
+    LINKED_PRESET_OPTIMIZATION_OPTIONS.forEach(bindLinkedPresetOptimizationOption);
 
     $('#bai_bai_toolkit_preset_prompt_codemirror_editor_enabled')
         .prop('checked', settings.presetPromptCodeMirrorEditorEnabled)
@@ -281,6 +269,30 @@ export function bindPresetOptimizationSettings({ saveSettings } = {}) {
             settings.presetAutoSaveAfterPromptEditEnabled = Boolean($(this).prop('checked'));
             persistSettings();
         });
+}
+
+function syncLinkedPresetOptimizationSettings(enabled) {
+    for (const { key } of LINKED_PRESET_OPTIMIZATION_OPTIONS) {
+        settings[key] = enabled;
+    }
+}
+
+function syncLinkedPresetOptimizationCheckboxes(enabled) {
+    for (const { selector } of LINKED_PRESET_OPTIMIZATION_OPTIONS) {
+        $(selector).prop('checked', enabled);
+    }
+}
+
+function applyLinkedPresetOptimizationSettings() {
+    cancelPromptManagerCustomDragPending();
+    finishPromptManagerCustomDrag({ cancelled: true });
+    rebuildPresetVuePromptListDraggable();
+    applyPresetScrollOptimization();
+    applyPresetDragOptimization();
+    applyPresetSwitchOptimization();
+    applyPresetToggleOptimization();
+    applyPresetSaveOptimization();
+    applyPresetGrouping();
 }
 
 function loadPresetCodeMirrorModules() {
