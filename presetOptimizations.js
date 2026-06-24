@@ -8383,7 +8383,6 @@ function setCurrentPresetPromptFavoritesState(nextState, { persist = true } = {}
     }
 
     applyPresetPromptFavoritesToMemory(presetName, normalizedState);
-    syncCurrentOpenAiPresetCacheFromSettings(presetName);
 
     if (persist) {
         markOpenAiPresetSavePending(presetName);
@@ -8412,14 +8411,6 @@ function applyPresetPromptFavoritesToMemory(presetName, favoritesState) {
         }
     }
 
-    const preset = getPresetManager('openai')?.getCompletionPresetByName?.(presetName);
-
-    if (preset) {
-        preset.extensions = preset.extensions && typeof preset.extensions === 'object'
-            ? preset.extensions
-            : {};
-        setObjectPath(preset.extensions, PRESET_FAVORITES_EXTENSION_PATH, normalizedState);
-    }
 }
 
 function readCurrentPresetExtensionField(path) {
@@ -8484,16 +8475,11 @@ function savePresetPromptGroupSettings({ force = false } = {}) {
         markPresetPromptGroupSettingsSavePending(payload);
     }
 
-    if (changed) {
-        syncCurrentOpenAiPresetCacheFromSettings(payload?.presetName);
-    }
-
     return changed;
 }
 
 function getCurrentPresetPromptGroupExtensionPayload() {
     const presetName = oai_settings?.preset_settings_openai;
-    const presetManager = getPresetManager('openai');
 
     if (!presetName) {
         return null;
@@ -8515,7 +8501,6 @@ function getCurrentPresetPromptGroupExtensionPayload() {
     const serialized = JSON.stringify(groupState);
     return {
         presetName,
-        presetManager,
         groupState,
         syncKey: `${presetName}:${serialized}`,
     };
@@ -8540,14 +8525,6 @@ function applyPresetPromptGroupExtensionPayloadToMemory(payload) {
         }
     }
 
-    const preset = payload.presetManager?.getCompletionPresetByName?.(payload.presetName);
-
-    if (preset) {
-        preset.extensions = preset.extensions && typeof preset.extensions === 'object'
-            ? preset.extensions
-            : {};
-        setObjectPath(preset.extensions, PRESET_GROUP_EXTENSION_PATH, payload.groupState);
-    }
 }
 
 function syncCurrentPresetPromptGroupStateToPresetExtensionField({ force = false, persist = true, payload = null } = {}) {
@@ -8583,7 +8560,6 @@ async function flushCurrentPresetPromptGroupSettings({ force = false } = {}) {
 
     applyPresetPromptGroupExtensionPayloadToMemory(payload);
     extensionState.presetPromptGroupExtensionSyncKey = payload.syncKey;
-    syncCurrentOpenAiPresetCacheFromSettings(payload.presetName);
     markOpenAiPresetSavePending(payload.presetName);
     await saveSettings();
 
@@ -9338,7 +9314,6 @@ function markOpenAiPresetSavePending(presetName = oai_settings?.preset_settings_
         return;
     }
 
-    syncCurrentOpenAiPresetCacheFromSettings(presetName);
     getPendingOpenAiPresetSaves().add(presetName);
 }
 
@@ -9352,7 +9327,6 @@ function markPresetPromptServiceSettingsSavePending() {
 
     getPendingPresetPromptServiceSaves(manager).set(entry.presetName, entry);
     manager.pendingServiceSettingsSave = true;
-    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
     markPresetPromptChangesSavePending();
 }
 
@@ -9476,12 +9450,6 @@ function applyPendingPresetPromptServiceSaveToMemory(entry) {
     }
 
     const promptOrder = structuredClone(entry.promptOrder);
-    const presetManager = getPresetManager('openai');
-    const preset = presetManager?.getCompletionPresetByName?.(entry.presetName);
-
-    if (preset) {
-        preset.prompt_order = structuredClone(promptOrder);
-    }
 
     if (oai_settings?.preset_settings_openai === entry.presetName) {
         oai_settings.prompt_order = structuredClone(promptOrder);
@@ -9500,7 +9468,6 @@ function applyPendingPresetPromptGroupSaveToMemory(entry) {
 
     applyPresetPromptGroupExtensionPayloadToMemory({
         presetName: entry.presetName,
-        presetManager: getPresetManager('openai'),
         groupState: structuredClone(entry.groupState),
         syncKey: entry.syncKey || `${entry.presetName}:${JSON.stringify(entry.groupState)}`,
     });
@@ -9747,7 +9714,6 @@ async function flushPendingPresetPromptChanges({ includeOpenAiPresetSaves = fals
 
             for (const entry of pendingServiceSaves) {
                 if (applyPendingPresetPromptServiceSaveToMemory(entry)) {
-                    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
                     presetNamesNeedingPresetSave.add(entry.presetName);
                     shouldSaveSettingsOnly = true;
                 }
@@ -9755,14 +9721,12 @@ async function flushPendingPresetPromptChanges({ includeOpenAiPresetSaves = fals
 
             for (const entry of pendingGroupSaves) {
                 if (applyPendingPresetPromptGroupSaveToMemory(entry)) {
-                    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
                     presetNamesNeedingPresetSave.add(entry.presetName);
                     shouldSaveSettingsOnly = true;
                 }
             }
 
             if ((shouldSaveServiceSettings || shouldSaveGroups) && !presetNamesNeedingPresetSave.size) {
-                syncCurrentOpenAiPresetCacheFromSettings();
                 presetNamesNeedingPresetSave.add(oai_settings?.preset_settings_openai);
                 shouldSaveSettingsOnly = true;
             }
@@ -9835,7 +9799,6 @@ async function flushPendingPresetPromptServiceSave(entry) {
         return;
     }
 
-    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
     markOpenAiPresetSavePending(entry.presetName);
     await saveSettings();
 }
@@ -9845,7 +9808,6 @@ async function flushPendingPresetPromptGroupSave(entry) {
         return;
     }
 
-    syncCurrentOpenAiPresetCacheFromSettings(entry.presetName);
     markOpenAiPresetSavePending(entry.presetName);
     await saveSettings();
 }
@@ -9868,7 +9830,6 @@ async function savePresetVuePromptOrderFromModel() {
 
     if (areStringArraysEqual(beforeOrder, afterOrder)) {
         savePresetVuePromptGroupAssignments(nextAssignments);
-        syncCurrentOpenAiPresetCacheFromSettings();
         return;
     }
 
@@ -9883,7 +9844,6 @@ async function savePresetVuePromptOrderFromModel() {
     savePresetVuePromptGroupAssignments(nextAssignments, { persist: false });
     markPresetPromptServiceSettingsSavePending();
     savePresetPromptGroupSettings();
-    syncCurrentOpenAiPresetCacheFromSettings();
 }
 
 function getPresetVuePromptGroupAssignmentsFromModel(model) {
@@ -12079,13 +12039,7 @@ function refreshPresetPromptListAfterCopy() {
 
 async function handleOpenAiPresetChangedBefore(event) {
     extensionState.openAiPresetSwitchEarlyRendered = false;
-
-    try {
-        await flushPendingPresetPromptChanges();
-    } catch (error) {
-        console.debug(`${LOG_PREFIX} Failed to save preset prompt changes before preset switch`, error);
-        toastr.error(t`Failed to save preset prompt changes. See console for details.`);
-    }
+    clearPendingPresetPromptChangesForPreset(event?.presetNameBefore);
     resetPresetPromptGroupRuntimeState();
 
     if (!settings.presetSwitchOptimizationEnabled || !isPromptManagerReadyForFastPresetSwitch()) {
