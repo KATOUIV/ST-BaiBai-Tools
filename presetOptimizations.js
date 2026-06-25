@@ -37,10 +37,6 @@ const LINKED_PRESET_OPTIMIZATION_OPTIONS = [
         key: 'presetToggleOptimizationEnabled',
         selector: '#bai_bai_toolkit_preset_toggle_optimization_enabled',
     },
-    {
-        key: 'presetGroupingEnabled',
-        selector: '#bai_bai_toolkit_preset_grouping_enabled',
-    },
 ];
 const PRESET_BACKUP_PREVIEW_APP_KEY = '__baiBaiToolkitPresetBackupPreviewApp';
 const PRESET_BACKUP_PREVIEW_UI_KEY = '__baiBaiToolkitPresetBackupPreviewUi';
@@ -106,6 +102,8 @@ const PRESET_VUE_TOUCH_START_THRESHOLD_PX = 10;
 const PRESET_VUE_GROUP_HEADER_TOGGLE_DISTANCE_PX = 6;
 const PRESET_VUE_GROUP_HEADER_DRAG_SUPPRESS_MS = 350;
 const PRESET_DRAG_LONG_PRESS_MS = 300;
+const PRESET_PROMPT_DELETE_CHOICE_DETACH = 2201;
+const PRESET_PROMPT_DELETE_CHOICE_DELETE = 2202;
 
 function isPresetGenerationActive() {
     if (typeof scriptModule.isGenerating === 'function') {
@@ -246,14 +244,25 @@ export function bindPresetOptimizationSettings({ saveSettings } = {}) {
             .prop('checked', settings[key] === true)
             .on('input', function () {
                 const enabled = Boolean($(this).prop('checked'));
-                syncLinkedPresetOptimizationSettings(enabled);
+                const changed = syncLinkedPresetOptimizationSettings(enabled);
                 syncLinkedPresetOptimizationCheckboxes(enabled);
+                if (!changed) {
+                    return;
+                }
                 persistSettings();
                 applyLinkedPresetOptimizationSettings();
             });
     };
 
     LINKED_PRESET_OPTIMIZATION_OPTIONS.forEach(bindLinkedPresetOptimizationOption);
+
+    $('#bai_bai_toolkit_preset_grouping_enabled')
+        .prop('checked', settings.presetGroupingEnabled !== false)
+        .on('input', function () {
+            settings.presetGroupingEnabled = Boolean($(this).prop('checked'));
+            persistSettings();
+            applyPresetGrouping();
+        });
 
     $('#bai_bai_toolkit_preset_prompt_codemirror_editor_enabled')
         .prop('checked', settings.presetPromptCodeMirrorEditorEnabled)
@@ -272,9 +281,16 @@ export function bindPresetOptimizationSettings({ saveSettings } = {}) {
 }
 
 function syncLinkedPresetOptimizationSettings(enabled) {
+    let changed = false;
+
     for (const { key } of LINKED_PRESET_OPTIMIZATION_OPTIONS) {
-        settings[key] = enabled;
+        if (settings[key] !== enabled) {
+            settings[key] = enabled;
+            changed = true;
+        }
     }
+
+    return changed;
 }
 
 function syncLinkedPresetOptimizationCheckboxes(enabled) {
@@ -292,7 +308,6 @@ function applyLinkedPresetOptimizationSettings() {
     applyPresetSwitchOptimization();
     applyPresetToggleOptimization();
     applyPresetSaveOptimization();
-    applyPresetGrouping();
 }
 
 function loadPresetCodeMirrorModules() {
@@ -9108,7 +9123,7 @@ async function deletePresetVuePromptGroup(groupId) {
 }
 
 function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false } = {}) {
-    const canDelete = true;
+    const canDelete = isPresetPromptDeleteOrDetachAllowed(prompt);
     const canEdit = promptManager.isPromptEditAllowed?.(prompt) ?? (FORCE_EDIT_PROMPTS.has(prompt.identifier) || !prompt.marker);
     const canToggle = promptManager.isPromptToggleAllowed?.(prompt) ?? (
         prompt.marker && !FORCE_TOGGLE_PROMPTS.has(prompt.identifier)
@@ -9202,7 +9217,7 @@ function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false
                 ? renderPresetVuePromptActionButton(h, {
                     action: 'delete',
                     icon: 'fa-trash',
-                    text: t`删除`,
+                    text: t`删除或移除`,
                     caution: true,
                     onClick: event => handlePresetPromptActionButtonClick(event),
                 })
@@ -9229,6 +9244,10 @@ function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false
     ];
 }
 
+function isPresetPromptDeleteOrDetachAllowed(prompt) {
+    return Boolean(prompt && (promptManager?.isPromptDeletionAllowed?.(prompt) ?? prompt.system_prompt === false));
+}
+
 function renderPresetVuePromptActionButton(h, { action, icon, text, caution = false, extraClasses = [], onClick = null }) {
     return h('span', {
         class: [
@@ -9253,7 +9272,7 @@ function renderPresetPromptControlsHtml({ canDelete, canEdit, canToggle, isEnabl
         ? renderPresetPromptActionButtonHtml({
             action: 'delete',
             icon: 'fa-trash',
-            text: t`删除`,
+            text: t`删除或移除`,
             caution: true,
         })
         : '';
@@ -10833,9 +10852,55 @@ async function handlePresetPromptGroupRenamedBefore(event) {
         if (extensionState.presetPromptGroupRuntimePresetName === event.oldName) {
             syncCurrentPresetPromptGroupStateToPresetExtensionField({ force: true, persist: false });
         }
+
+        // ST 重命名 openai 预设时,会先保存一个空的新预设并触发预设切换;在开启预设切换
+        // 优化后该切换被异步推迟,等它执行时会用空预设覆盖 oai_settings.extensions,导致分组丢失。
+        // 这里在数据仍完整时(RENAMED_BEFORE)把分组状态深拷贝暂存,等 RENAMED 时再写回。
+        extensionState.renamedPresetGroupStash = captureRenamedPresetGroupStash(event.oldName, event.newName);
     } catch (error) {
         console.debug(`${LOG_PREFIX} Failed to prepare preset prompt groups before preset rename`, error);
     }
+}
+
+function captureRenamedPresetGroupStash(oldName, newName) {
+    const live = getObjectPath(oai_settings?.extensions, PRESET_GROUP_EXTENSION_PATH);
+    const source = hasPresetPromptGroupStateData(live)
+        ? live
+        : (extensionState.presetPromptGroupRuntimePresetName === oldName ? extensionState.presetPromptGroupRuntimeState : null);
+
+    if (!hasPresetPromptGroupStateData(source)) {
+        return null;
+    }
+
+    return {
+        newName,
+        groupState: structuredClone(source),
+    };
+}
+
+function restoreRenamedPresetGroupStash(newName) {
+    const stash = extensionState.renamedPresetGroupStash;
+    delete extensionState.renamedPresetGroupStash;
+
+    if (!stash || stash.newName !== newName || !hasPresetPromptGroupStateData(stash.groupState)) {
+        return false;
+    }
+
+    const groupState = structuredClone(stash.groupState);
+    const payload = {
+        presetName: newName,
+        groupState,
+        syncKey: `${newName}:${JSON.stringify(groupState)}`,
+    };
+
+    // 写回 oai_settings.extensions / serviceSettings(当前预设已是新名),随后的
+    // update_oai_preset 会基于 oai_settings 落盘,从而把分组持久化到新预设文件。
+    applyPresetPromptGroupExtensionPayloadToMemory(payload);
+    extensionState.presetPromptGroupExtensionSyncKey = payload.syncKey;
+    extensionState.presetPromptGroupRuntimePresetName = newName;
+    extensionState.presetPromptGroupRuntimeState = structuredClone(groupState);
+    markOpenAiPresetSavePending(newName);
+    return true;
 }
 
 function handlePresetPromptGroupRenamed(event) {
@@ -10852,6 +10917,9 @@ function handlePresetPromptGroupRenamed(event) {
     }
 
     delete extensionState.presetPromptGroupExtensionSyncKey;
+
+    // 把 RENAMED_BEFORE 暂存的分组数据写回新预设(此时内存中的分组已被异步预设切换清空)。
+    restoreRenamedPresetGroupStash(event.newName);
 
     if (isPresetVuePromptListManagerActive()) {
         syncPresetVuePromptListManagerState();
@@ -11581,9 +11649,14 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
         event.stopImmediatePropagation?.();
         closePresetPromptActionMenus();
 
-        const confirmed = await callGenericPopup(t`要从当前预设列表中移除这个条目吗？`, POPUP_TYPE.CONFIRM);
+        const choice = await promptPresetPromptDeleteChoice(promptId);
 
-        if (!confirmed) {
+        if (choice === PRESET_PROMPT_DELETE_CHOICE_DELETE) {
+            await deleteCurrentPresetPromptEntry(promptId);
+            return;
+        }
+
+        if (choice !== PRESET_PROMPT_DELETE_CHOICE_DETACH) {
             return;
         }
 
@@ -11626,6 +11699,141 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
             promptManager.saveServiceSettings = originalSaveServiceSettings;
         }
     }
+}
+
+async function promptPresetPromptDeleteChoice(promptId) {
+    const prompt = promptManager?.getPromptById?.(promptId);
+    const promptName = escapeHtml(String(prompt?.name || promptId || t`这个条目`));
+    const canDelete = isPresetPromptDeleteOrDetachAllowed(prompt);
+    const customButtons = [
+        {
+            text: t`仅从当前预设移除`,
+            icon: 'fa-chain-broken',
+            result: PRESET_PROMPT_DELETE_CHOICE_DETACH,
+        },
+    ];
+
+    if (canDelete) {
+        customButtons.push({
+            text: t`彻底删除条目`,
+            icon: 'fa-trash',
+            result: PRESET_PROMPT_DELETE_CHOICE_DELETE,
+            classes: ['caution'],
+        });
+    }
+
+    return callGenericPopup(
+        `<div class="bai-bai-preset-prompt-delete-choice">
+            <p>${t`要如何处理这个预设条目？`}</p>
+            <p><strong>${promptName}</strong></p>
+            <p>${t`仅移除会保留条目本体，以后仍可重新添加；彻底删除会从当前预设中删除这个条目定义。`}</p>
+        </div>`,
+        POPUP_TYPE.TEXT,
+        '',
+        {
+            okButton: false,
+            cancelButton: t`取消`,
+            customButtons,
+        },
+    );
+}
+
+async function deleteCurrentPresetPromptEntry(promptId) {
+    if (!promptId || !promptManager || !Array.isArray(promptManager.serviceSettings?.prompts)) {
+        toastr.warning(t`没有找到要删除的预设条目。`);
+        return false;
+    }
+
+    const prompt = promptManager.getPromptById?.(promptId);
+
+    if (!prompt) {
+        toastr.warning(t`没有找到要删除的预设条目。`);
+        return false;
+    }
+
+    if (!isPresetPromptDeleteOrDetachAllowed(prompt)) {
+        toastr.warning(t`这个预设条目不能被彻底删除。`);
+        return false;
+    }
+
+    const promptIndex = promptManager.serviceSettings.prompts.findIndex(item => item?.identifier === promptId);
+
+    if (promptIndex < 0) {
+        toastr.warning(t`没有找到要删除的预设条目。`);
+        return false;
+    }
+
+    removeCurrentPresetPromptFavorite(promptId);
+    promptManager.serviceSettings.prompts.splice(promptIndex, 1);
+    removePresetPromptIdFromAllPromptOrders(promptId);
+    cleanupDeletedPresetPromptGroupState(promptId);
+
+    const counts = promptManager.tokenHandler?.getCounts?.();
+    if (counts && typeof counts === 'object') {
+        delete counts[promptId];
+    }
+
+    promptManager.hidePopup?.();
+    promptManager.clearEditForm?.();
+    promptManager.clearInspectForm?.();
+    promptManager.log?.(`Deleted prompt: ${prompt.identifier}`);
+
+    markPresetPromptServiceSettingsSavePending();
+    markOpenAiPresetSavePending();
+    refreshPresetPromptListAfterMutation();
+    schedulePresetPromptCodeMirrorEditorRefresh(undefined, { forceFromSource: true });
+    refreshPromptManagerTokensDebounced();
+    void flushPendingPresetPromptChanges({ includeOpenAiPresetSaves: false }).catch(error => {
+        console.debug(`${LOG_PREFIX} Failed to save deleted preset prompt changes`, error);
+        toastr.error(t`删除预设条目后保存失败。`);
+    });
+    toastr.success(t`已彻底删除预设条目。`);
+    return true;
+}
+
+function removePresetPromptIdFromAllPromptOrders(promptId) {
+    let changed = false;
+    const promptOrderLists = promptManager?.serviceSettings?.prompt_order;
+
+    if (Array.isArray(promptOrderLists)) {
+        for (const list of promptOrderLists) {
+            changed = removePresetPromptIdFromOrder(list?.order, promptId) || changed;
+        }
+    }
+
+    const activeOrder = promptManager?.getPromptOrderForCharacter?.(promptManager.activeCharacter);
+    changed = removePresetPromptIdFromOrder(activeOrder, promptId) || changed;
+    return changed;
+}
+
+function removePresetPromptIdFromOrder(order, promptId) {
+    if (!Array.isArray(order)) {
+        return false;
+    }
+
+    let changed = false;
+
+    for (let index = order.length - 1; index >= 0; index--) {
+        if (order[index]?.identifier === promptId) {
+            order.splice(index, 1);
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+function cleanupDeletedPresetPromptGroupState(promptId) {
+    const groupState = getPresetPromptGroupState();
+
+    if (!groupState?.prompts || !Object.prototype.hasOwnProperty.call(groupState.prompts, promptId)) {
+        return false;
+    }
+
+    delete groupState.prompts[promptId];
+    removeUnusedPresetPromptGroups(groupState);
+    normalizePresetPromptGroupState(groupState, new Set(getCurrentPresetPromptOrderIds()));
+    return savePresetPromptGroupSettings();
 }
 
 async function addPresetPromptToGlobalLibrary(promptId) {
@@ -12110,6 +12318,10 @@ function copyPresetPromptGroupAssignment(sourcePromptId, copiedPromptId) {
 }
 
 function refreshPresetPromptListAfterCopy() {
+    refreshPresetPromptListAfterMutation();
+}
+
+function refreshPresetPromptListAfterMutation() {
     if (isPresetVuePromptListManagerActive()) {
         syncPresetVuePromptListManagerState();
         preparePromptManagerCustomDragList(getPromptManagerListElement(), {
@@ -12292,7 +12504,7 @@ async function renderPromptManagerListItemsFast({ skipVueSyncIfCurrentCycle = fa
         });
 
         const calculatedTokens = tokens ? tokens : '-';
-        const canDelete = true;
+        const canDelete = isPresetPromptDeleteOrDetachAllowed(prompt);
         const canEdit = FORCE_EDIT_PROMPTS.has(prompt.identifier) || !prompt.marker;
         const canToggle = prompt.marker && !FORCE_TOGGLE_PROMPTS.has(prompt.identifier)
             ? false

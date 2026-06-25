@@ -391,7 +391,6 @@ const linkedPresetOptimizationSettingKeys = [
     'presetMobileWholeRowDragEnabled',
     'presetSwitchOptimizationEnabled',
     'presetToggleOptimizationEnabled',
-    'presetGroupingEnabled',
 ];
 const legacySettingsKeys = [
     'textareaScrollOptimizationEnabled',
