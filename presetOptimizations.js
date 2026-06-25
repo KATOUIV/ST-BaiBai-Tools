@@ -37,10 +37,6 @@ const LINKED_PRESET_OPTIMIZATION_OPTIONS = [
         key: 'presetToggleOptimizationEnabled',
         selector: '#bai_bai_toolkit_preset_toggle_optimization_enabled',
     },
-    {
-        key: 'presetGroupingEnabled',
-        selector: '#bai_bai_toolkit_preset_grouping_enabled',
-    },
 ];
 const PRESET_BACKUP_PREVIEW_APP_KEY = '__baiBaiToolkitPresetBackupPreviewApp';
 const PRESET_BACKUP_PREVIEW_UI_KEY = '__baiBaiToolkitPresetBackupPreviewUi';
@@ -55,6 +51,7 @@ const PRESET_CONTEXT_TOKEN_REFRESH_KEY = '__baiBaiToolkitPresetContextTokenRefre
 const PRESET_GROUP_PRESET_DELETED_HANDLER_KEY = '__baiBaiToolkitPresetGroupPresetDeletedHandler';
 const PRESET_GROUP_PRESET_IMPORT_HANDLER_KEY = '__baiBaiToolkitPresetGroupPresetImportHandler';
 const PRESET_GROUP_PRESET_RENAMED_HANDLER_KEY = '__baiBaiToolkitPresetGroupPresetRenamedHandler';
+const PRESET_AUTO_BACKUP_RENAME_HANDLER_KEY = '__baiBaiToolkitPresetAutoBackupRenameHandler';
 const PRESET_SELECT_CHANGE_HANDLER_KEY = '__baiBaiToolkitPresetSelectChangeHandler';
 const PRESET_DELETE_HANDLER_KEY = '__baiBaiToolkitPresetDeleteHandler';
 const PRESET_LIST_ACTION_HANDLER_KEY = '__baiBaiToolkitPresetListActionHandler';
@@ -106,6 +103,8 @@ const PRESET_VUE_TOUCH_START_THRESHOLD_PX = 10;
 const PRESET_VUE_GROUP_HEADER_TOGGLE_DISTANCE_PX = 6;
 const PRESET_VUE_GROUP_HEADER_DRAG_SUPPRESS_MS = 350;
 const PRESET_DRAG_LONG_PRESS_MS = 300;
+const PRESET_PROMPT_DELETE_CHOICE_DETACH = 2201;
+const PRESET_PROMPT_DELETE_CHOICE_DELETE = 2202;
 
 function isPresetGenerationActive() {
     if (typeof scriptModule.isGenerating === 'function') {
@@ -246,14 +245,25 @@ export function bindPresetOptimizationSettings({ saveSettings } = {}) {
             .prop('checked', settings[key] === true)
             .on('input', function () {
                 const enabled = Boolean($(this).prop('checked'));
-                syncLinkedPresetOptimizationSettings(enabled);
+                const changed = syncLinkedPresetOptimizationSettings(enabled);
                 syncLinkedPresetOptimizationCheckboxes(enabled);
+                if (!changed) {
+                    return;
+                }
                 persistSettings();
                 applyLinkedPresetOptimizationSettings();
             });
     };
 
     LINKED_PRESET_OPTIMIZATION_OPTIONS.forEach(bindLinkedPresetOptimizationOption);
+
+    $('#bai_bai_toolkit_preset_grouping_enabled')
+        .prop('checked', settings.presetGroupingEnabled !== false)
+        .on('input', function () {
+            settings.presetGroupingEnabled = Boolean($(this).prop('checked'));
+            persistSettings();
+            applyPresetGrouping();
+        });
 
     $('#bai_bai_toolkit_preset_prompt_codemirror_editor_enabled')
         .prop('checked', settings.presetPromptCodeMirrorEditorEnabled)
@@ -272,9 +282,16 @@ export function bindPresetOptimizationSettings({ saveSettings } = {}) {
 }
 
 function syncLinkedPresetOptimizationSettings(enabled) {
+    let changed = false;
+
     for (const { key } of LINKED_PRESET_OPTIMIZATION_OPTIONS) {
-        settings[key] = enabled;
+        if (settings[key] !== enabled) {
+            settings[key] = enabled;
+            changed = true;
+        }
     }
+
+    return changed;
 }
 
 function syncLinkedPresetOptimizationCheckboxes(enabled) {
@@ -292,7 +309,6 @@ function applyLinkedPresetOptimizationSettings() {
     applyPresetSwitchOptimization();
     applyPresetToggleOptimization();
     applyPresetSaveOptimization();
-    applyPresetGrouping();
 }
 
 function loadPresetCodeMirrorModules() {
@@ -329,6 +345,26 @@ function dispatchDescriptionEditorSourceInput(source) {
 
 function applyPresetAutoBackup() {
     installPresetAutoBackupFetchHook();
+    installPresetRenameBackupSuppressionListener();
+}
+
+// 独立监听 PRESET_RENAMED_BEFORE 来开启备份抑制窗口,只依赖自动备份本身是否可用,
+// 与分组开关解耦(分组关闭、仅装了后端柏宝库时也能去重)。窗口关闭由 update guard 驱动。
+function installPresetRenameBackupSuppressionListener() {
+    if (extensionState[PRESET_AUTO_BACKUP_RENAME_HANDLER_KEY] || !event_types.PRESET_RENAMED_BEFORE) {
+        return;
+    }
+
+    const handler = (event) => {
+        if (event?.apiId !== 'openai' || !event.oldName || !event.newName) {
+            return;
+        }
+
+        beginPresetRenameBackupSuppression();
+    };
+
+    extensionState[PRESET_AUTO_BACKUP_RENAME_HANDLER_KEY] = handler;
+    eventSource.on(event_types.PRESET_RENAMED_BEFORE, handler);
 }
 
 function setPresetAutoBackupBackendAvailable(available) {
@@ -360,7 +396,10 @@ function installPresetAutoBackupFetchHook() {
 
     state.wrappedFetch = function baiBaiToolkitPresetAutoBackupFetch(input, init) {
         if (state.isEnabled() && isPresetAutoBackupSourceRequest(input, init)) {
-            if (state.skipCount > 0) {
+            if (state.renameSuppress) {
+                // 重命名进行中:不立即备份,只同步记住最后一次保存内容,窗口关闭时再补一次。
+                capturePresetRenameBackupBodySync(state, input, init);
+            } else if (state.skipCount > 0) {
                 state.skipCount -= 1;
             } else {
                 void schedulePresetAutoBackupFromRequest(state, input, init);
@@ -411,6 +450,10 @@ async function schedulePresetAutoBackupFromRequest(state, input, init) {
         return;
     }
 
+    await sendPresetAutoBackup(state, body);
+}
+
+async function sendPresetAutoBackup(state, body) {
     try {
         await state.originalFetch(PRESET_BACKUP_SAVE_URL, {
             method: 'POST',
@@ -420,6 +463,60 @@ async function schedulePresetAutoBackupFromRequest(state, input, init) {
     } catch (error) {
         console.debug(`${LOG_PREFIX} Failed to create preset auto backup`, error);
     }
+}
+
+// 重命名期间会连续触发多次 /api/presets/save(ST 的"先建空预设→写回扩展→update 落盘"流程)。
+// 这里开一个抑制窗口:窗口内不逐次备份,只同步记住最后一次保存的内容;窗口由事件关闭
+// (update 收尾 click,见 installPresetUpdatePendingChangesGuard),关闭时只补一次最终结果备份。
+// 全程不依赖定时器。
+function beginPresetRenameBackupSuppression() {
+    const state = installPresetAutoBackupFetchHook();
+
+    if (!state) {
+        return;
+    }
+
+    state.renameSuppress = { lastBody: null };
+}
+
+// 同步记录本次保存内容。重命名期间的所有 /save 的 init.body 都是 JSON 字符串,可直接解析。
+function capturePresetRenameBackupBodySync(state, input, init) {
+    if (!state.renameSuppress) {
+        return;
+    }
+
+    let body = null;
+
+    try {
+        const raw = init && typeof init.body === 'string' ? init.body : null;
+        body = raw ? JSON.parse(raw) : null;
+    } catch {
+        body = null;
+    }
+
+    if (isPresetAutoBackupBody(body)) {
+        state.renameSuppress.lastBody = body;
+    }
+}
+
+// 关闭抑制窗口并补一次最终结果备份。幂等:重复调用时窗口已关,直接返回。
+function flushPresetRenameBackup() {
+    const state = globalThis[PRESET_AUTO_BACKUP_FETCH_KEY];
+
+    if (!state?.renameSuppress) {
+        return;
+    }
+
+    const body = state.renameSuppress.lastBody;
+    state.renameSuppress = null;
+
+    if (state.isEnabled() && isPresetAutoBackupBody(body)) {
+        void sendPresetAutoBackup(state, body);
+    }
+}
+
+function isPresetRenameInProgress() {
+    return Boolean(globalThis[PRESET_AUTO_BACKUP_FETCH_KEY]?.renameSuppress);
 }
 
 function isPresetAutoBackupBody(body) {
@@ -2433,6 +2530,18 @@ function installPresetUpdatePendingChangesGuard() {
             return;
         }
 
+        // 重命名收尾:ST 的 update 点击(jQuery 处理器)已同步把完整 oai_settings 落盘,此时
+        // 抑制窗口里记下的就是最终内容。补一次备份并关闭窗口;同时拦掉这次原生 re-click 的
+        // 多余重复提交,清理 pending,避免再发一次预设保存。全程由事件驱动,不依赖定时器。
+        // 放在 bypass 判断之前,确保任何到达此处的 update click 都能可靠关闭抑制窗口(幂等)。
+        if (isPresetRenameInProgress()) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            flushPresetRenameBackup();
+            clearPendingPresetPromptChangesForPreset(oai_settings?.preset_settings_openai);
+            return;
+        }
+
         if (extensionState.presetUpdatePendingChangesBypass) {
             extensionState.presetUpdatePendingChangesBypass = false;
             return;
@@ -4037,7 +4146,9 @@ function removePresetVuePromptListManager({ skipRestore = false } = {}) {
     setPresetVuePromptDragScrollGuardEnabled(false);
     document.body?.classList.remove(PRESET_VUE_DRAGGING_BODY_CLASS);
 
-    removePresetVuePromptListRenderPatch();
+    if (!settings.presetSwitchOptimizationEnabled) {
+        removePresetVuePromptListRenderPatch();
+    }
     removePresetVueDynamicDragDelayHandlers();
 
     unmountPresetVuePromptListApp(manager);
@@ -4356,6 +4467,12 @@ function installPresetVuePromptListRenderPatch() {
     const originalRenderPromptManagerListItems = promptManager.renderPromptManagerListItems;
     const patchedRenderPromptManagerListItems = async function (...args) {
         if (!isPresetGroupingEnabled()) {
+            if (settings.presetSwitchOptimizationEnabled && isPromptManagerReadyForFastPresetSwitch()) {
+                await renderPromptManagerListItemsFast();
+                schedulePromptManagerDraggableInit();
+                return undefined;
+            }
+
             return originalRenderPromptManagerListItems.apply(this, args);
         }
 
@@ -9108,7 +9225,7 @@ async function deletePresetVuePromptGroup(groupId) {
 }
 
 function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false } = {}) {
-    const canDelete = true;
+    const canDelete = isPresetPromptDeleteOrDetachAllowed(prompt);
     const canEdit = promptManager.isPromptEditAllowed?.(prompt) ?? (FORCE_EDIT_PROMPTS.has(prompt.identifier) || !prompt.marker);
     const canToggle = promptManager.isPromptToggleAllowed?.(prompt) ?? (
         prompt.marker && !FORCE_TOGGLE_PROMPTS.has(prompt.identifier)
@@ -9202,7 +9319,7 @@ function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false
                 ? renderPresetVuePromptActionButton(h, {
                     action: 'delete',
                     icon: 'fa-trash',
-                    text: t`删除`,
+                    text: t`删除或移除`,
                     caution: true,
                     onClick: event => handlePresetPromptActionButtonClick(event),
                 })
@@ -9229,6 +9346,10 @@ function renderPresetVuePromptControls(h, prompt, item, { favoriteMirror = false
     ];
 }
 
+function isPresetPromptDeleteOrDetachAllowed(prompt) {
+    return Boolean(prompt && (promptManager?.isPromptDeletionAllowed?.(prompt) ?? prompt.system_prompt === false));
+}
+
 function renderPresetVuePromptActionButton(h, { action, icon, text, caution = false, extraClasses = [], onClick = null }) {
     return h('span', {
         class: [
@@ -9253,7 +9374,7 @@ function renderPresetPromptControlsHtml({ canDelete, canEdit, canToggle, isEnabl
         ? renderPresetPromptActionButtonHtml({
             action: 'delete',
             icon: 'fa-trash',
-            text: t`删除`,
+            text: t`删除或移除`,
             caution: true,
         })
         : '';
@@ -10743,6 +10864,7 @@ function applyPresetSwitchOptimization() {
     applyPresetSelectChangeDeferral();
     applyPresetDeleteSelectionOptimization();
     applyPresetListActionDelegation();
+    installPresetVuePromptListRenderPatch();
     applyPresetGroupDeletedCleanup();
     applyPresetGroupImportCleanup();
     applyPresetGroupRenameCleanup();
@@ -10833,9 +10955,55 @@ async function handlePresetPromptGroupRenamedBefore(event) {
         if (extensionState.presetPromptGroupRuntimePresetName === event.oldName) {
             syncCurrentPresetPromptGroupStateToPresetExtensionField({ force: true, persist: false });
         }
+
+        // ST 重命名 openai 预设时,会先保存一个空的新预设并触发预设切换;在开启预设切换
+        // 优化后该切换被异步推迟,等它执行时会用空预设覆盖 oai_settings.extensions,导致分组丢失。
+        // 这里在数据仍完整时(RENAMED_BEFORE)把分组状态深拷贝暂存,等 RENAMED 时再写回。
+        extensionState.renamedPresetGroupStash = captureRenamedPresetGroupStash(event.oldName, event.newName);
     } catch (error) {
         console.debug(`${LOG_PREFIX} Failed to prepare preset prompt groups before preset rename`, error);
     }
+}
+
+function captureRenamedPresetGroupStash(oldName, newName) {
+    const live = getObjectPath(oai_settings?.extensions, PRESET_GROUP_EXTENSION_PATH);
+    const source = hasPresetPromptGroupStateData(live)
+        ? live
+        : (extensionState.presetPromptGroupRuntimePresetName === oldName ? extensionState.presetPromptGroupRuntimeState : null);
+
+    if (!hasPresetPromptGroupStateData(source)) {
+        return null;
+    }
+
+    return {
+        newName,
+        groupState: structuredClone(source),
+    };
+}
+
+function restoreRenamedPresetGroupStash(newName) {
+    const stash = extensionState.renamedPresetGroupStash;
+    delete extensionState.renamedPresetGroupStash;
+
+    if (!stash || stash.newName !== newName || !hasPresetPromptGroupStateData(stash.groupState)) {
+        return false;
+    }
+
+    const groupState = structuredClone(stash.groupState);
+    const payload = {
+        presetName: newName,
+        groupState,
+        syncKey: `${newName}:${JSON.stringify(groupState)}`,
+    };
+
+    // 写回 oai_settings.extensions / serviceSettings(当前预设已是新名),随后的
+    // update_oai_preset 会基于 oai_settings 落盘,从而把分组持久化到新预设文件。
+    applyPresetPromptGroupExtensionPayloadToMemory(payload);
+    extensionState.presetPromptGroupExtensionSyncKey = payload.syncKey;
+    extensionState.presetPromptGroupRuntimePresetName = newName;
+    extensionState.presetPromptGroupRuntimeState = structuredClone(groupState);
+    markOpenAiPresetSavePending(newName);
+    return true;
 }
 
 function handlePresetPromptGroupRenamed(event) {
@@ -10852,6 +11020,9 @@ function handlePresetPromptGroupRenamed(event) {
     }
 
     delete extensionState.presetPromptGroupExtensionSyncKey;
+
+    // 把 RENAMED_BEFORE 暂存的分组数据写回新预设(此时内存中的分组已被异步预设切换清空)。
+    restoreRenamedPresetGroupStash(event.newName);
 
     if (isPresetVuePromptListManagerActive()) {
         syncPresetVuePromptListManagerState();
@@ -11581,9 +11752,14 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
         event.stopImmediatePropagation?.();
         closePresetPromptActionMenus();
 
-        const confirmed = await callGenericPopup(t`要从当前预设列表中移除这个条目吗？`, POPUP_TYPE.CONFIRM);
+        const choice = await promptPresetPromptDeleteChoice(promptId);
 
-        if (!confirmed) {
+        if (choice === PRESET_PROMPT_DELETE_CHOICE_DELETE) {
+            await deleteCurrentPresetPromptEntry(promptId);
+            return;
+        }
+
+        if (choice !== PRESET_PROMPT_DELETE_CHOICE_DETACH) {
             return;
         }
 
@@ -11626,6 +11802,141 @@ async function handlePresetPromptActionButtonClick(event, action = null) {
             promptManager.saveServiceSettings = originalSaveServiceSettings;
         }
     }
+}
+
+async function promptPresetPromptDeleteChoice(promptId) {
+    const prompt = promptManager?.getPromptById?.(promptId);
+    const promptName = escapeHtml(String(prompt?.name || promptId || t`这个条目`));
+    const canDelete = isPresetPromptDeleteOrDetachAllowed(prompt);
+    const customButtons = [
+        {
+            text: t`仅从当前预设移除`,
+            icon: 'fa-chain-broken',
+            result: PRESET_PROMPT_DELETE_CHOICE_DETACH,
+        },
+    ];
+
+    if (canDelete) {
+        customButtons.push({
+            text: t`彻底删除条目`,
+            icon: 'fa-trash',
+            result: PRESET_PROMPT_DELETE_CHOICE_DELETE,
+            classes: ['caution'],
+        });
+    }
+
+    return callGenericPopup(
+        `<div class="bai-bai-preset-prompt-delete-choice">
+            <p>${t`要如何处理这个预设条目？`}</p>
+            <p><strong>${promptName}</strong></p>
+            <p>${t`仅移除会保留条目本体，以后仍可重新添加；彻底删除会从当前预设中删除这个条目定义。`}</p>
+        </div>`,
+        POPUP_TYPE.TEXT,
+        '',
+        {
+            okButton: false,
+            cancelButton: t`取消`,
+            customButtons,
+        },
+    );
+}
+
+async function deleteCurrentPresetPromptEntry(promptId) {
+    if (!promptId || !promptManager || !Array.isArray(promptManager.serviceSettings?.prompts)) {
+        toastr.warning(t`没有找到要删除的预设条目。`);
+        return false;
+    }
+
+    const prompt = promptManager.getPromptById?.(promptId);
+
+    if (!prompt) {
+        toastr.warning(t`没有找到要删除的预设条目。`);
+        return false;
+    }
+
+    if (!isPresetPromptDeleteOrDetachAllowed(prompt)) {
+        toastr.warning(t`这个预设条目不能被彻底删除。`);
+        return false;
+    }
+
+    const promptIndex = promptManager.serviceSettings.prompts.findIndex(item => item?.identifier === promptId);
+
+    if (promptIndex < 0) {
+        toastr.warning(t`没有找到要删除的预设条目。`);
+        return false;
+    }
+
+    removeCurrentPresetPromptFavorite(promptId);
+    promptManager.serviceSettings.prompts.splice(promptIndex, 1);
+    removePresetPromptIdFromAllPromptOrders(promptId);
+    cleanupDeletedPresetPromptGroupState(promptId);
+
+    const counts = promptManager.tokenHandler?.getCounts?.();
+    if (counts && typeof counts === 'object') {
+        delete counts[promptId];
+    }
+
+    promptManager.hidePopup?.();
+    promptManager.clearEditForm?.();
+    promptManager.clearInspectForm?.();
+    promptManager.log?.(`Deleted prompt: ${prompt.identifier}`);
+
+    markPresetPromptServiceSettingsSavePending();
+    markOpenAiPresetSavePending();
+    refreshPresetPromptListAfterMutation();
+    schedulePresetPromptCodeMirrorEditorRefresh(undefined, { forceFromSource: true });
+    refreshPromptManagerTokensDebounced();
+    void flushPendingPresetPromptChanges({ includeOpenAiPresetSaves: false }).catch(error => {
+        console.debug(`${LOG_PREFIX} Failed to save deleted preset prompt changes`, error);
+        toastr.error(t`删除预设条目后保存失败。`);
+    });
+    toastr.success(t`已彻底删除预设条目。`);
+    return true;
+}
+
+function removePresetPromptIdFromAllPromptOrders(promptId) {
+    let changed = false;
+    const promptOrderLists = promptManager?.serviceSettings?.prompt_order;
+
+    if (Array.isArray(promptOrderLists)) {
+        for (const list of promptOrderLists) {
+            changed = removePresetPromptIdFromOrder(list?.order, promptId) || changed;
+        }
+    }
+
+    const activeOrder = promptManager?.getPromptOrderForCharacter?.(promptManager.activeCharacter);
+    changed = removePresetPromptIdFromOrder(activeOrder, promptId) || changed;
+    return changed;
+}
+
+function removePresetPromptIdFromOrder(order, promptId) {
+    if (!Array.isArray(order)) {
+        return false;
+    }
+
+    let changed = false;
+
+    for (let index = order.length - 1; index >= 0; index--) {
+        if (order[index]?.identifier === promptId) {
+            order.splice(index, 1);
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+function cleanupDeletedPresetPromptGroupState(promptId) {
+    const groupState = getPresetPromptGroupState();
+
+    if (!groupState?.prompts || !Object.prototype.hasOwnProperty.call(groupState.prompts, promptId)) {
+        return false;
+    }
+
+    delete groupState.prompts[promptId];
+    removeUnusedPresetPromptGroups(groupState);
+    normalizePresetPromptGroupState(groupState, new Set(getCurrentPresetPromptOrderIds()));
+    return savePresetPromptGroupSettings();
 }
 
 async function addPresetPromptToGlobalLibrary(promptId) {
@@ -12110,6 +12421,10 @@ function copyPresetPromptGroupAssignment(sourcePromptId, copiedPromptId) {
 }
 
 function refreshPresetPromptListAfterCopy() {
+    refreshPresetPromptListAfterMutation();
+}
+
+function refreshPresetPromptListAfterMutation() {
     if (isPresetVuePromptListManagerActive()) {
         syncPresetVuePromptListManagerState();
         preparePromptManagerCustomDragList(getPromptManagerListElement(), {
@@ -12208,6 +12523,7 @@ function applyPromptManagerPresetFieldsEarly(preset) {
 }
 
 async function renderPromptManagerListWithoutTokenStats() {
+    installPresetVuePromptListRenderPatch();
     const scrollContainer = promptManager.containerElement.closest('.scrollableInner');
     const scrollTop = scrollContainer?.scrollTop;
     const renderCycle = (extensionState.presetPromptManagerFastRenderCycle ?? 0) + 1;
@@ -12292,7 +12608,7 @@ async function renderPromptManagerListItemsFast({ skipVueSyncIfCurrentCycle = fa
         });
 
         const calculatedTokens = tokens ? tokens : '-';
-        const canDelete = true;
+        const canDelete = isPresetPromptDeleteOrDetachAllowed(prompt);
         const canEdit = FORCE_EDIT_PROMPTS.has(prompt.identifier) || !prompt.marker;
         const canToggle = prompt.marker && !FORCE_TOGGLE_PROMPTS.has(prompt.identifier)
             ? false
