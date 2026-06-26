@@ -30,10 +30,6 @@ const LINKED_PRESET_OPTIMIZATION_OPTIONS = [
         selector: '#bai_bai_toolkit_preset_mobile_whole_row_drag_enabled',
     },
     {
-        key: 'presetSwitchOptimizationEnabled',
-        selector: '#bai_bai_toolkit_preset_switch_optimization_enabled',
-    },
-    {
         key: 'presetToggleOptimizationEnabled',
         selector: '#bai_bai_toolkit_preset_toggle_optimization_enabled',
     },
@@ -256,6 +252,14 @@ export function bindPresetOptimizationSettings({ saveSettings } = {}) {
     };
 
     LINKED_PRESET_OPTIMIZATION_OPTIONS.forEach(bindLinkedPresetOptimizationOption);
+
+    $('#bai_bai_toolkit_preset_switch_optimization_enabled')
+        .prop('checked', settings.presetSwitchOptimizationEnabled === true)
+        .on('input', function () {
+            settings.presetSwitchOptimizationEnabled = Boolean($(this).prop('checked'));
+            persistSettings();
+            applyPresetSwitchOptimization();
+        });
 
     $('#bai_bai_toolkit_preset_grouping_enabled')
         .prop('checked', settings.presetGroupingEnabled !== false)

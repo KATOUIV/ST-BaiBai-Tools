@@ -355,7 +355,7 @@ const defaultSettings = {
     welcomeRecentChatDirectOpenEnabled: true,
     saveRequestGzipEnabled: true,
     translateMessageUpdatedOptimizationEnabled: true,
-    longChatDomRenderOptimizationEnabled: false,
+    longChatDomRenderOptimizationEnabled: true,
     messageCompletionScrollToMiddleEnabled: true,
     chatListScrollOptimizationEnabled: true,
     chatListAutoClearEnabled: true,
@@ -389,7 +389,6 @@ const linkedPresetOptimizationSettingKeys = [
     'presetScrollOptimizationEnabled',
     'presetDragOptimizationEnabled',
     'presetMobileWholeRowDragEnabled',
-    'presetSwitchOptimizationEnabled',
     'presetToggleOptimizationEnabled',
 ];
 const legacySettingsKeys = [
