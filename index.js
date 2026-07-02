@@ -942,6 +942,16 @@ function syncCustomCssCodeMirrorFromThemeChange() {
 
 function scheduleCustomCssCodeMirrorThemeSync() {
     const state = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
+
+    if (!state?.enabled) {
+        syncCustomCssStateFromSettings('theme change without CodeMirror', {
+            forceEditor: false,
+            refreshTarget: false,
+            clearThemePending: false,
+        });
+        return;
+    }
+
     const token = (state?.themeSyncToken ?? 0) + 1;
 
     // Mark synchronously, before the rAF is even registered. A theme switch has
@@ -951,13 +961,11 @@ function scheduleCustomCssCodeMirrorThemeSync() {
     // rAF), this flag tells the flush to NOT write the stale doc back over the
     // fresh custom_css. The flag is cleared once the sync has pulled the new CSS
     // into the doc.
-    if (state?.enabled) {
-        state.themeSyncPending = true;
-        state.themeSyncToken = token;
-        state.themeSyncTimers ||= [];
-        state.themeSyncFrames ||= [];
-        clearCustomCssCodeMirrorThemeSyncTimers(state);
-    }
+    state.themeSyncPending = true;
+    state.themeSyncToken = token;
+    state.themeSyncTimers ||= [];
+    state.themeSyncFrames ||= [];
+    clearCustomCssCodeMirrorThemeSyncTimers(state);
 
     const sync = (phase = 'settle') => {
         if (state?.enabled && state.themeSyncToken !== token) {
@@ -967,6 +975,7 @@ function scheduleCustomCssCodeMirrorThemeSync() {
         try {
             if (syncCustomCssCodeMirrorFromThemeChange()) {
                 console.debug(`${LOG_PREFIX} CodeMirror custom CSS editor synced after theme change (${phase})`);
+                clearCustomCssCodeMirrorThemeSyncTimers(state);
             }
         } catch (error) {
             console.debug(`${LOG_PREFIX} Failed to sync CodeMirror custom CSS editor after theme change`, error);
@@ -977,16 +986,12 @@ function scheduleCustomCssCodeMirrorThemeSync() {
 
     if (typeof requestAnimationFrame === 'function') {
         const frame = requestAnimationFrame(() => sync('animation frame'));
-        if (state?.enabled) {
-            state.themeSyncFrames.push(frame);
-        }
+        state.themeSyncFrames.push(frame);
     }
 
     for (const delay of CUSTOM_CSS_THEME_SYNC_SETTLE_DELAYS_MS) {
         const timer = setTimeout(() => sync(`timeout ${delay}ms`), delay);
-        if (state?.enabled) {
-            state.themeSyncTimers.push(timer);
-        }
+        state.themeSyncTimers.push(timer);
     }
 }
 
@@ -4357,6 +4362,7 @@ function hashCustomCssDebugValue(value) {
 
 function applyCustomCssStyleText() {
     let style = document.getElementById(CUSTOM_CSS_STYLE_ID);
+    const value = String(power_user.custom_css ?? '');
 
     if (!style) {
         style = document.createElement('style');
@@ -4365,7 +4371,12 @@ function applyCustomCssStyleText() {
         document.head.append(style);
     }
 
-    style.textContent = String(power_user.custom_css ?? '');
+    if (style.textContent !== value) {
+        style.textContent = value;
+        return true;
+    }
+
+    return false;
 }
 
 function installCustomCssCodeMirrorEditorOptimization() {
