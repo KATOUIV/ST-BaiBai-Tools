@@ -23,7 +23,7 @@ import { sendMessageAs } from '../../../slash-commands.js';
 import { isAdmin } from '../../../user.js';
 import { debounce, download, getCharaFilename, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4 } from '../../../utils.js';
 import { getCurrentPresetAPI as getRegexCurrentPresetAPI, getCurrentPresetName as getRegexCurrentPresetName, getScriptsByType as getRegexScriptsByType, runRegexScript, SCRIPT_TYPES as REGEX_SCRIPT_TYPES, substitute_find_regex } from '../../regex/engine.js';
-const CURRENT_VERSION = '0.27.19';
+const CURRENT_VERSION = '0.27.20';
 const LOCAL_ASSET_VERSION = getLocalAssetVersion(CURRENT_VERSION);
 const { SaveGenerateDisplay } = await importVersionedLocalModule('./saveGenerateDisplay.js');
 const chatOptimizations = await importVersionedLocalModule('./chatOptimizations.js');
@@ -949,6 +949,19 @@ function syncCustomCssCodeMirrorFromThemeChange() {
 }
 
 function scheduleCustomCssCodeMirrorThemeSync() {
+    const state = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
+
+    // Mark synchronously, before the rAF is even registered. A theme switch has
+    // already written the new CSS into power_user.custom_css, so the editor's
+    // current doc is stale. If a page-lifecycle flush fires before the deferred
+    // sync runs (e.g. the tab is hidden right after switching, which also freezes
+    // rAF), this flag tells the flush to NOT write the stale doc back over the
+    // fresh custom_css. The flag is cleared once the sync has pulled the new CSS
+    // into the doc.
+    if (state?.enabled) {
+        state.themeSyncPending = true;
+    }
+
     const sync = () => {
         try {
             if (syncCustomCssCodeMirrorFromThemeChange()) {
@@ -956,6 +969,10 @@ function scheduleCustomCssCodeMirrorThemeSync() {
             }
         } catch (error) {
             console.debug(`${LOG_PREFIX} Failed to sync CodeMirror custom CSS editor after theme change`, error);
+        } finally {
+            if (state) {
+                state.themeSyncPending = false;
+            }
         }
     };
 
@@ -4097,6 +4114,7 @@ function getCustomCssCodeMirrorEditorState() {
             loadingToken: null,
             colorScheme: 'light',
             colorSchemeDirty: true,
+            themeSyncPending: false,
         };
     }
 
@@ -4787,6 +4805,7 @@ function detachCustomCssCodeMirrorEditor(state) {
     state.dirty = false;
     state.syncingFromSource = false;
     state.loadingToken = null;
+    state.themeSyncPending = false;
 }
 
 function getCustomCssCodeMirrorValue(state) {
@@ -4978,6 +4997,20 @@ function flushCustomCssCodeMirrorEditor(reason, { apply = false, save = true } =
     state.flushing = true;
 
     try {
+        // A theme switch is pending re-sync: power_user.custom_css already holds
+        // the new theme's CSS, but the editor doc still shows the old one. Writing
+        // the doc back here (the tab-hidden flush can beat the rAF that re-syncs,
+        // since rAF is frozen while hidden) would clobber the new CSS with the old.
+        // Skip the write-back; just keep the live <style> in sync with the new
+        // custom_css. The pending rAF sync will refill the doc when the tab returns.
+        if (state.themeSyncPending) {
+            if (apply) {
+                flushCustomCssApply();
+            }
+
+            return false;
+        }
+
         const changed = syncCustomCssCodeMirrorToSource(state) || state.dirty;
         state.dirty = false;
 
