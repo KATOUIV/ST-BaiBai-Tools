@@ -205,16 +205,6 @@ const CUSTOM_CSS_CODEMIRROR_EXTERNAL_READ_SELECTOR = [
 const CUSTOM_CSS_DARK_BACKGROUND_LUMINANCE_THRESHOLD = 0.45;
 const CUSTOM_CSS_THEME_SYNC_SETTLE_DELAYS_MS = [0, 50, 160, 500, 1000];
 const CUSTOM_CSS_RESTORE_SYNC_SETTLE_DELAYS_MS = [0, 80, 200, 500];
-const CUSTOM_CSS_DEBUG_FUNCTION_NAME = 'baiBaiToolkitDebugCustomCss';
-const CUSTOM_CSS_DIAGNOSTIC_LOG_KEY = '__baiBaiToolkitCustomCssDiagnosticLog';
-const CUSTOM_CSS_DIAGNOSTIC_LOG_LIMIT = 160;
-const CUSTOM_CSS_DIAGNOSTIC_DUMP_FUNCTION_NAME = 'baiBaiToolkitDumpCustomCssLog';
-const CUSTOM_CSS_DIAGNOSTIC_CLEAR_FUNCTION_NAME = 'baiBaiToolkitClearCustomCssLog';
-const CUSTOM_CSS_DIAGNOSTIC_START_FUNCTION_NAME = 'baiBaiToolkitStartCustomCssLog';
-const CUSTOM_CSS_DIAGNOSTIC_STOP_FUNCTION_NAME = 'baiBaiToolkitStopAndExportCustomCssLog';
-const CUSTOM_CSS_DIAGNOSTIC_START_BUTTON_ID = 'bai_bai_toolkit_custom_css_diagnostic_start';
-const CUSTOM_CSS_DIAGNOSTIC_STOP_BUTTON_ID = 'bai_bai_toolkit_custom_css_diagnostic_stop';
-const CUSTOM_CSS_DIAGNOSTIC_STATUS_ID = 'bai_bai_toolkit_custom_css_diagnostic_status';
 const DESCRIPTION_CODEMIRROR_CDN_MODULES = {
     state: 'https://esm.sh/@codemirror/state@6?bundle',
     view: 'https://esm.sh/@codemirror/view@6?bundle',
@@ -942,9 +932,6 @@ function setBaibaokuThemeSelectBusy(target, busy) {
 }
 
 function syncCustomCssCodeMirrorFromThemeChange() {
-    recordCustomCssDiagnostic('theme sync requested', {
-        reason: 'theme change',
-    });
 
     return syncCustomCssStateFromSettings('theme change', {
         forceEditor: true,
@@ -957,9 +944,6 @@ function scheduleCustomCssCodeMirrorThemeSync() {
     const state = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
 
     if (!state?.enabled) {
-        recordCustomCssDiagnostic('theme sync without CodeMirror', {
-            reason: 'theme change without CodeMirror',
-        });
         syncCustomCssStateFromSettings('theme change without CodeMirror', {
             forceEditor: false,
             refreshTarget: false,
@@ -982,39 +966,19 @@ function scheduleCustomCssCodeMirrorThemeSync() {
     state.themeSyncTimers ||= [];
     state.themeSyncFrames ||= [];
     clearCustomCssCodeMirrorThemeSyncTimers(state);
-    recordCustomCssDiagnostic('theme sync scheduled', {
-        token,
-        delays: CUSTOM_CSS_THEME_SYNC_SETTLE_DELAYS_MS,
-        hasRequestAnimationFrame: typeof requestAnimationFrame === 'function',
-    });
 
     const sync = (phase = 'settle') => {
         if (state?.enabled && state.themeSyncToken !== token) {
-            recordCustomCssDiagnostic('theme sync skipped by stale token', {
-                phase,
-                token,
-                currentToken: state.themeSyncToken,
-            });
             return;
         }
 
         try {
             const complete = syncCustomCssCodeMirrorFromThemeChange();
-            recordCustomCssDiagnostic('theme sync pass completed', {
-                phase,
-                token,
-                complete,
-            });
 
             if (complete) {
                 clearCustomCssCodeMirrorThemeSyncTimers(state);
             }
         } catch (error) {
-            recordCustomCssDiagnostic('theme sync pass failed', {
-                phase,
-                token,
-                error: formatCustomCssDiagnosticError(error),
-            }, { consoleLevel: 'debug' });
         }
     };
 
@@ -1139,13 +1103,6 @@ function applyBaibaokuThemeObject(theme, fallbackName) {
     const hydrateTheme = globalThis.baibaokuHydrateTheme;
     let applyPath = 'unknown';
 
-    recordCustomCssDiagnostic('theme apply started', {
-        themeName,
-        fallbackName: String(fallbackName || ''),
-        themeCustomCss: summarizeCustomCssDebugValue(theme?.custom_css),
-        hasNativeApplyTheme: typeof applyNativeTheme === 'function',
-        hasHydrateTheme: typeof hydrateTheme === 'function',
-    });
 
     extensionState.customCssThemeApplyDepth = (extensionState.customCssThemeApplyDepth || 0) + 1;
 
@@ -1192,16 +1149,7 @@ function applyBaibaokuThemeObject(theme, fallbackName) {
             saveSettingsDebounced();
         }
 
-        recordCustomCssDiagnostic('theme apply path completed', {
-            themeName,
-            applyPath,
-        });
     } catch (error) {
-        recordCustomCssDiagnostic('theme apply failed', {
-            themeName,
-            applyPath,
-            error: formatCustomCssDiagnosticError(error),
-        }, { consoleLevel: 'warn' });
         throw error;
     } finally {
         extensionState.customCssThemeApplyDepth = Math.max(0, (extensionState.customCssThemeApplyDepth || 1) - 1);
@@ -1209,10 +1157,6 @@ function applyBaibaokuThemeObject(theme, fallbackName) {
 
     scheduleCustomCssCodeMirrorThemeSync();
     syncThemeManagerAfterLazyThemeApply(themeName);
-    recordCustomCssDiagnostic('theme apply finished', {
-        themeName,
-        applyPath,
-    }, { consoleLevel: 'log' });
 }
 
 function applyBaibaokuLazyThemeLoadingOptimization() {
@@ -1232,30 +1176,15 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
             return;
         }
 
-        recordCustomCssDiagnostic('theme select change captured', {
-            selectedTheme: themeName,
-            currentPowerUserTheme: String(power_user?.theme || ''),
-            lazyGuardCurrentTheme: String(state.currentThemeName || ''),
-        });
 
         if (settings.baibaokuSettingsAccelerationEnabled === false || settings.baibaokuLazyThemeLoadingEnabled === false) {
             state.currentThemeName = themeName;
-            recordCustomCssDiagnostic('theme select bypassed by settings', {
-                selectedTheme: themeName,
-                settingsAccelerationEnabled: settings.baibaokuSettingsAccelerationEnabled !== false,
-                lazyThemeLoadingEnabled: settings.baibaokuLazyThemeLoadingEnabled !== false,
-            });
             return;
         }
 
         const bridge = getBaibaokuEarlyBridge();
         if (!bridge?.installed) {
             state.currentThemeName = themeName;
-            recordCustomCssDiagnostic('theme select bypassed by missing bridge', {
-                selectedTheme: themeName,
-                bridgePresent: Boolean(bridge),
-                bridgeInstalled: Boolean(bridge?.installed),
-            });
             return;
         }
 
@@ -1267,25 +1196,13 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
         if (previousThemeName && previousThemeName !== themeName) {
             cachedPreviousTheme = cacheBaibaokuCurrentThemeSnapshot(previousThemeName);
         }
-        recordCustomCssDiagnostic('lazy theme load started', {
-            selectedTheme: themeName,
-            previousThemeName,
-            cachedPreviousTheme,
-        });
         const loadingToken = showBaibaokuThemeLoadingOverlay(state, target);
         setBaibaokuThemeSelectBusy(target, true);
 
         state.pending = loadBaibaokuThemeByName(themeName)
             .then((theme) => {
-                recordCustomCssDiagnostic('lazy theme load resolved', {
-                    selectedTheme: themeName,
-                    themeCustomCss: summarizeCustomCssDebugValue(theme?.custom_css),
-                });
                 applyBaibaokuThemeObject(theme, themeName);
                 state.currentThemeName = themeName;
-                recordCustomCssDiagnostic('lazy theme load applied', {
-                    selectedTheme: themeName,
-                });
             })
             .catch((error) => {
                 if (error?.status === 404 && typeof bridge.clearSettingsGetCache === 'function') {
@@ -1297,11 +1214,6 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
                 if (globalThis.toastr?.error) {
                     globalThis.toastr.error(`美化主题加载失败：${error?.message || String(error)}`, '柏宝库');
                 }
-                recordCustomCssDiagnostic('lazy theme load failed', {
-                    selectedTheme: themeName,
-                    previousThemeName,
-                    error: formatCustomCssDiagnosticError(error),
-                }, { consoleLevel: 'warn' });
             })
             .finally(() => {
                 if (state.loadingToken === loadingToken) {
@@ -1309,11 +1221,6 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
                     state.pending = null;
                 }
                 hideBaibaokuThemeLoadingOverlay(state, loadingToken);
-                recordCustomCssDiagnostic('lazy theme load finished', {
-                    selectedTheme: themeName,
-                    currentThemeName: state.currentThemeName,
-                    stillPending: Boolean(state.pending),
-                });
             });
     };
 
@@ -3169,8 +3076,6 @@ async function renderSettingsPanel() {
             applyCustomCssInputOptimization();
         });
 
-    initializeCustomCssDiagnosticRecorderUi(container);
-
     $('#bai_bai_toolkit_world_info_drawer_optimization_enabled')
         .prop('checked', settings.worldInfoDrawerOptimizationEnabled || settings.worldInfoPageOptimizationEnabled)
         .on('input', function () {
@@ -3414,83 +3319,6 @@ async function renderSettingsPanel() {
         });
 
     chatOptimizations.applyChatOptimizationCompatibilityIndicators(container);
-}
-
-function initializeCustomCssDiagnosticRecorderUi(container) {
-    const root = container?.jquery ? container : $(container);
-    if (!root.length || root.find(`#${CUSTOM_CSS_DIAGNOSTIC_START_BUTTON_ID}`).length) {
-        updateCustomCssDiagnosticRecorderUi(root);
-        return;
-    }
-
-    const anchor = root.find('#bai_bai_toolkit_custom_css_shadow_property_enabled').closest('label');
-    if (!anchor.length) {
-        return;
-    }
-
-    const controls = $(`
-        <div class="bai-bai-custom-css-diagnostic-controls flex-container alignItemCenter flexGap5" style="margin: 2px 0 4px 22px; flex-wrap: wrap;">
-            <div id="${CUSTOM_CSS_DIAGNOSTIC_START_BUTTON_ID}" class="menu_button menu_button_icon" title="开始记录自定义 CSS 与美化切换诊断日志">
-                <i class="fa-solid fa-circle-play"></i>
-                <span>开始监听</span>
-            </div>
-            <div id="${CUSTOM_CSS_DIAGNOSTIC_STOP_BUTTON_ID}" class="menu_button menu_button_icon disabled" title="结束记录并导出 txt 日志">
-                <i class="fa-solid fa-file-arrow-down"></i>
-                <span>结束并导出txt</span>
-            </div>
-            <small id="${CUSTOM_CSS_DIAGNOSTIC_STATUS_ID}" style="opacity: 0.75;"></small>
-        </div>
-    `);
-
-    anchor.after(controls);
-
-    controls.find(`#${CUSTOM_CSS_DIAGNOSTIC_START_BUTTON_ID}`).on('click', function () {
-        if ($(this).hasClass('disabled')) {
-            return;
-        }
-
-        startCustomCssDiagnosticRecording('settings panel start button');
-        updateCustomCssDiagnosticRecorderUi(root);
-        globalThis.toastr?.info?.('已开始监听自定义 CSS 诊断日志，复现后点击“结束并导出txt”。');
-    });
-
-    controls.find(`#${CUSTOM_CSS_DIAGNOSTIC_STOP_BUTTON_ID}`).on('click', function () {
-        if ($(this).hasClass('disabled')) {
-            return;
-        }
-
-        try {
-            const result = stopCustomCssDiagnosticRecordingAndExport('settings panel stop button');
-            updateCustomCssDiagnosticRecorderUi(root);
-            if (result?.fileName) {
-                globalThis.toastr?.success?.(`已导出日志：${result.fileName}`);
-            }
-        } catch (error) {
-            recordCustomCssDiagnostic('diagnostic log export failed from settings button', {
-                error: formatCustomCssDiagnosticError(error),
-            }, { consoleLevel: 'warn' });
-            globalThis.toastr?.error?.(`日志导出失败：${error?.message || String(error)}`);
-        }
-    });
-
-    updateCustomCssDiagnosticRecorderUi(root);
-}
-
-function updateCustomCssDiagnosticRecorderUi(container = $('#bai_bai_toolkit_container')) {
-    const root = container?.jquery ? container : $(container);
-    const recording = Boolean(extensionState.customCssDiagnosticRecording);
-    const startButton = root.find(`#${CUSTOM_CSS_DIAGNOSTIC_START_BUTTON_ID}`);
-    const stopButton = root.find(`#${CUSTOM_CSS_DIAGNOSTIC_STOP_BUTTON_ID}`);
-    const status = root.find(`#${CUSTOM_CSS_DIAGNOSTIC_STATUS_ID}`);
-
-    startButton.toggleClass('disabled', recording);
-    stopButton.toggleClass('disabled', !recording);
-
-    if (status.length) {
-        status.text(recording
-            ? `监听中，开始于 ${extensionState.customCssDiagnosticRecordingStartedAt || ''}`
-            : '未监听');
-    }
 }
 
 function initializeBaibaokuPanel(container) {
@@ -4010,7 +3838,6 @@ function applyFeatureSettings() {
     applyCharacterListAvatarLazyLoadOptimization();
     applyFastChatGetOptimization();
     applyDescriptionCodeMirrorEditorOptimization();
-    installCustomCssDebugFunction();
     applyCustomCssInputOptimization();
     presetOptimizations.applyPresetScrollOptimization();
     presetOptimizations.applyPresetInterfaceCollapse();
@@ -4037,10 +3864,6 @@ function applyFeatureSettings() {
 }
 
 function applyCustomCssInputOptimization() {
-    recordCustomCssDiagnostic('custom css optimization apply requested', {
-        inputOptimizationEnabled: Boolean(settings.customCssInputOptimizationEnabled),
-        shadowPropertyEnabled: Boolean(settings.customCssShadowPropertyEnabled),
-    });
 
     if (settings.customCssShadowPropertyEnabled) {
         installCustomCssShadowPropertyOptimization();
@@ -4077,15 +3900,7 @@ function installCustomCssShadowPropertyOnInput(input, initialValue = '') {
     }
 
     if (extensionState.customCssShadowPropertyInstalled && extensionState.customCssShadowPropertyInput === input) {
-        const previousValue = String(input.value ?? '');
         input.value = initialValue;
-        const nextValue = String(input.value ?? '');
-        if (shouldRecordCustomCssValueChange('shadow property target refresh', previousValue !== nextValue)) {
-            recordCustomCssDiagnostic('shadow property target refreshed', {
-                previous: summarizeCustomCssDebugValue(previousValue),
-                next: summarizeCustomCssDebugValue(nextValue),
-            });
-        }
         return true;
     }
 
@@ -4104,16 +3919,9 @@ function installCustomCssShadowPropertyOnInput(input, initialValue = '') {
             return virtualValue;
         },
         set: function (newValue) {
-            const previousValue = virtualValue;
             virtualValue = String(newValue);
             extensionState.customCssShadowVirtualValue = virtualValue;
             // Intentionally DO NOT call original setter to prevent DOM rendering
-            if (shouldRecordCustomCssValueChange('shadow property value setter', previousValue !== virtualValue)) {
-                recordCustomCssDiagnostic('shadow property value set', {
-                    previous: summarizeCustomCssDebugValue(previousValue),
-                    next: summarizeCustomCssDebugValue(virtualValue),
-                });
-            }
         },
         configurable: true,
         enumerable: true
@@ -4121,9 +3929,6 @@ function installCustomCssShadowPropertyOnInput(input, initialValue = '') {
 
     extensionState.customCssShadowPropertyInstalled = true;
     extensionState.customCssShadowPropertyInput = input;
-    recordCustomCssDiagnostic('shadow property installed', {
-        initialValue: summarizeCustomCssDebugValue(virtualValue),
-    });
 
     return true;
 }
@@ -4147,17 +3952,12 @@ function removeCustomCssShadowPropertyOptimization() {
         return;
     }
 
-    const input = extensionState.customCssShadowPropertyInput || document.getElementById(CUSTOM_CSS_INPUT_ID);
-    const previousValue = input instanceof HTMLTextAreaElement ? String(input.value ?? '') : null;
     restoreCustomCssShadowPropertyInput(extensionState.customCssShadowPropertyInput || document.getElementById(CUSTOM_CSS_INPUT_ID));
 
     extensionState.customCssOriginalValueDescriptor = null;
     extensionState.customCssShadowPropertyInstalled = false;
     extensionState.customCssShadowPropertyInput = null;
     extensionState.customCssShadowVirtualValue = '';
-    recordCustomCssDiagnostic('shadow property removed', {
-        previousValue: summarizeCustomCssDebugValue(previousValue),
-    });
 }
 
 function restoreCustomCssShadowPropertyInput(input) {
@@ -4170,9 +3970,6 @@ function restoreCustomCssShadowPropertyInput(input) {
     const currentValue = String(input.value ?? '');
     Object.defineProperty(input, 'value', originalDescriptor);
     input.value = currentValue;
-    recordCustomCssDiagnostic('shadow property restored to native textarea', {
-        restoredValue: summarizeCustomCssDebugValue(currentValue),
-    });
 
     return true;
 }
@@ -4239,10 +4036,6 @@ function installCustomCssInputOptimization() {
         }
     };
     const pageLifecycleHandler = (event) => {
-        recordCustomCssDiagnostic('input optimization page lifecycle', {
-            eventType: String(event?.type || ''),
-            isRestore: isCustomCssPageRestoreEvent(event),
-        });
 
         if (isCustomCssPageRestoreEvent(event)) {
             scheduleCustomCssStateRestoreSync(`input optimization ${event?.type || 'restore'}`);
@@ -4269,7 +4062,6 @@ function installCustomCssInputOptimization() {
         flushHandler,
         pageLifecycleHandler,
     };
-    recordCustomCssDiagnostic('input optimization installed', {});
 }
 
 function removeCustomCssInputOptimization() {
@@ -4294,7 +4086,6 @@ function removeCustomCssInputOptimization() {
     document.removeEventListener('visibilitychange', state.pageLifecycleHandler);
     clearCustomCssRestoreSyncTimers();
     delete extensionState[CUSTOM_CSS_INPUT_OPTIMIZATION_KEY];
-    recordCustomCssDiagnostic('input optimization removed', {});
 }
 
 function getCustomCssInputFromEvent(event) {
@@ -4312,16 +4103,7 @@ function commitCustomCssInputValue(input, reason = 'input commit') {
         return;
     }
 
-    const previousValue = String(power_user.custom_css ?? '');
-    const nextValue = String(input.value);
-    power_user.custom_css = nextValue;
-    if (shouldRecordCustomCssValueChange(reason, previousValue !== nextValue)) {
-        recordCustomCssDiagnostic('input committed to power_user.custom_css', {
-            reason,
-            previous: summarizeCustomCssDebugValue(previousValue),
-            next: summarizeCustomCssDebugValue(nextValue),
-        });
-    }
+    power_user.custom_css = String(input.value);
     saveSettingsDebounced();
 }
 
@@ -4340,9 +4122,6 @@ function flushCurrentCustomCssInput(reason = 'current input flush') {
     const codeMirrorState = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
 
     if (codeMirrorState?.themeSyncPending) {
-        recordCustomCssDiagnostic('current input flush redirected by pending theme sync', {
-            reason,
-        });
         syncCustomCssStateFromSettings(`${reason} while theme sync is pending`, {
             forceEditor: true,
             refreshTarget: true,
@@ -4429,23 +4208,7 @@ function syncCustomCssStateFromSettings(reason = 'custom css settings sync', {
     }
 
     if (!complete) {
-        recordCustomCssDiagnostic('state sync incomplete', {
-            reason,
-            originalInputSynced,
-            sourceSynced,
-            editorSynced,
-            styleSynced,
-            forceEditor,
-            refreshTarget,
-        });
     } else {
-        recordCustomCssDiagnostic('state sync completed', {
-            reason,
-            forceEditor,
-            refreshTarget,
-            clearThemePending,
-            themePendingCleared: Boolean(clearThemePending && state && !state.themeSyncPending),
-        });
     }
 
     return complete;
@@ -4457,20 +4220,9 @@ function scheduleCustomCssStateRestoreSync(reason = 'page restore') {
     const token = (extensionState.customCssRestoreSyncToken ?? 0) + 1;
     extensionState.customCssRestoreSyncToken = token;
     extensionState.customCssRestoreSyncTimers = [];
-    recordCustomCssDiagnostic('restore sync scheduled', {
-        reason,
-        token,
-        delays: CUSTOM_CSS_RESTORE_SYNC_SETTLE_DELAYS_MS,
-    });
 
     const sync = (phase) => {
         if (extensionState.customCssRestoreSyncToken !== token) {
-            recordCustomCssDiagnostic('restore sync skipped by stale token', {
-                reason,
-                phase,
-                token,
-                currentToken: extensionState.customCssRestoreSyncToken,
-            });
             return;
         }
 
@@ -4479,12 +4231,6 @@ function scheduleCustomCssStateRestoreSync(reason = 'page restore') {
             forceEditor: Boolean(state?.themeSyncPending),
             refreshTarget: true,
             clearThemePending: true,
-        });
-        recordCustomCssDiagnostic('restore sync pass completed', {
-            reason,
-            phase,
-            token,
-            complete,
         });
     };
 
@@ -4512,380 +4258,6 @@ function isCustomCssPageRestoreEvent(event) {
     return event?.type === 'visibilitychange' && document.visibilityState !== 'hidden';
 }
 
-function installCustomCssDebugFunction() {
-    if (typeof globalThis === 'undefined') {
-        return;
-    }
-
-    const alreadyInstalled = globalThis[CUSTOM_CSS_DEBUG_FUNCTION_NAME] === dumpCustomCssDebugSnapshot;
-    globalThis[CUSTOM_CSS_DEBUG_FUNCTION_NAME] = dumpCustomCssDebugSnapshot;
-    globalThis[CUSTOM_CSS_DEBUG_FUNCTION_NAME].snapshot = getCustomCssDebugSnapshot;
-    globalThis[CUSTOM_CSS_DIAGNOSTIC_DUMP_FUNCTION_NAME] = dumpCustomCssDiagnosticLog;
-    globalThis[CUSTOM_CSS_DIAGNOSTIC_CLEAR_FUNCTION_NAME] = clearCustomCssDiagnosticLog;
-    globalThis[CUSTOM_CSS_DIAGNOSTIC_START_FUNCTION_NAME] = startCustomCssDiagnosticRecording;
-    globalThis[CUSTOM_CSS_DIAGNOSTIC_STOP_FUNCTION_NAME] = stopCustomCssDiagnosticRecordingAndExport;
-
-    if (!alreadyInstalled) {
-        recordCustomCssDiagnostic('debug functions installed', {
-            debugFunction: CUSTOM_CSS_DEBUG_FUNCTION_NAME,
-            dumpFunction: CUSTOM_CSS_DIAGNOSTIC_DUMP_FUNCTION_NAME,
-            clearFunction: CUSTOM_CSS_DIAGNOSTIC_CLEAR_FUNCTION_NAME,
-            startFunction: CUSTOM_CSS_DIAGNOSTIC_START_FUNCTION_NAME,
-            stopFunction: CUSTOM_CSS_DIAGNOSTIC_STOP_FUNCTION_NAME,
-        });
-    }
-}
-
-function recordCustomCssDiagnostic(eventName, details = {}, { consoleLevel = 'debug', silent = false } = {}) {
-    try {
-        const log = getCustomCssDiagnosticLog();
-        const entry = {
-            index: (extensionState.customCssDiagnosticEventIndex ?? 0) + 1,
-            event: String(eventName || 'unknown'),
-            timestamp: new Date().toISOString(),
-            elapsedMs: typeof performance !== 'undefined' && typeof performance.now === 'function'
-                ? Math.round(performance.now())
-                : null,
-            state: getCustomCssDiagnosticStateSnapshot(),
-            details,
-        };
-
-        extensionState.customCssDiagnosticEventIndex = entry.index;
-        log.push(entry);
-
-        while (log.length > CUSTOM_CSS_DIAGNOSTIC_LOG_LIMIT) {
-            log.shift();
-        }
-
-        if (!silent) {
-            const printer = typeof console?.[consoleLevel] === 'function' ? console[consoleLevel] : console.debug;
-            printer.call(console, `${LOG_PREFIX} Custom CSS diagnostic: ${entry.event}\n${stringifyCustomCssDiagnosticPayload(entry)}`);
-        }
-
-        return entry;
-    } catch (error) {
-        const message = stringifyCustomCssDiagnosticPayload({
-            event: String(eventName || 'unknown'),
-            error: formatCustomCssDiagnosticError(error),
-        });
-        console.debug(`${LOG_PREFIX} Failed to record Custom CSS diagnostic\n${message}`);
-        return null;
-    }
-}
-
-function getCustomCssDiagnosticLog() {
-    if (typeof globalThis === 'undefined') {
-        extensionState.customCssDiagnosticLog ||= [];
-        return extensionState.customCssDiagnosticLog;
-    }
-
-    if (!Array.isArray(globalThis[CUSTOM_CSS_DIAGNOSTIC_LOG_KEY])) {
-        globalThis[CUSTOM_CSS_DIAGNOSTIC_LOG_KEY] = [];
-    }
-
-    return globalThis[CUSTOM_CSS_DIAGNOSTIC_LOG_KEY];
-}
-
-function clearCustomCssDiagnosticLog() {
-    const log = getCustomCssDiagnosticLog();
-    log.length = 0;
-    extensionState.customCssDiagnosticEventIndex = 0;
-    return `${LOG_PREFIX} Custom CSS diagnostic log cleared`;
-}
-
-function dumpCustomCssDiagnosticLog() {
-    return buildCustomCssDiagnosticText('manual dump');
-}
-
-function dumpCustomCssDebugSnapshot() {
-    return stringifyCustomCssDiagnosticPayload(getCustomCssDebugSnapshot({ includeDiagnostics: true }));
-}
-
-function startCustomCssDiagnosticRecording(reason = 'manual start') {
-    clearCustomCssDiagnosticLog();
-    extensionState.customCssDiagnosticRecording = true;
-    extensionState.customCssDiagnosticRecordingStartedAt = new Date().toISOString();
-    extensionState.customCssDiagnosticRecordingStoppedAt = '';
-    recordCustomCssDiagnostic('diagnostic recording started', {
-        reason,
-    }, { consoleLevel: 'log' });
-    updateCustomCssDiagnosticRecorderUi();
-
-    return buildCustomCssDiagnosticText('recording started snapshot');
-}
-
-function stopCustomCssDiagnosticRecordingAndExport(reason = 'manual stop') {
-    const stoppedAt = new Date().toISOString();
-    const wasRecording = Boolean(extensionState.customCssDiagnosticRecording);
-    extensionState.customCssDiagnosticRecordingStoppedAt = stoppedAt;
-
-    recordCustomCssDiagnostic('diagnostic recording stopped', {
-        reason,
-        wasRecording,
-        stoppedAt,
-    }, { consoleLevel: 'log' });
-
-    extensionState.customCssDiagnosticRecording = false;
-    updateCustomCssDiagnosticRecorderUi();
-
-    const fileName = buildCustomCssDiagnosticFileName();
-    recordCustomCssDiagnostic('diagnostic log export requested', {
-        reason,
-        fileName,
-    }, { consoleLevel: 'log' });
-
-    const text = buildCustomCssDiagnosticText(reason);
-    download(text, fileName, 'text/plain;charset=utf-8');
-
-    return {
-        fileName,
-        text,
-    };
-}
-
-function buildCustomCssDiagnosticText(reason = 'manual export') {
-    const payload = {
-        title: 'BaiBai Toolkit Custom CSS diagnostic log',
-        generatedAt: new Date().toISOString(),
-        reason,
-        recording: {
-            active: Boolean(extensionState.customCssDiagnosticRecording),
-            startedAt: extensionState.customCssDiagnosticRecordingStartedAt || '',
-            stoppedAt: extensionState.customCssDiagnosticRecordingStoppedAt || '',
-        },
-        snapshot: getCustomCssDebugSnapshot({ includeDiagnostics: false }),
-        diagnostics: getCustomCssDiagnosticLog().slice(),
-    };
-
-    return [
-        'BaiBai Toolkit Custom CSS diagnostic log',
-        `Generated: ${payload.generatedAt}`,
-        `Reason: ${reason}`,
-        '',
-        stringifyCustomCssDiagnosticPayload(payload),
-        '',
-    ].join('\n');
-}
-
-function buildCustomCssDiagnosticFileName() {
-    const stamp = new Date().toISOString()
-        .replace(/[:.]/g, '-')
-        .replace('T', '_')
-        .replace('Z', '');
-
-    return `bai-bai-custom-css-diagnostic-${stamp}.txt`;
-}
-
-function getCustomCssDiagnosticStateSnapshot() {
-    const snapshot = getCustomCssDebugSnapshot({ includeDiagnostics: false });
-    return {
-        theme: snapshot.theme,
-        themeSelectValue: snapshot.themeSelectValue,
-        visibilityState: snapshot.visibilityState,
-        documentHidden: snapshot.documentHidden,
-        summaries: snapshot.summaries,
-        matches: snapshot.matches,
-        settings: snapshot.settings,
-        shadow: snapshot.shadow,
-        codeMirror: snapshot.codeMirror,
-        diagnosticRecording: snapshot.diagnosticRecording,
-        lazyTheme: snapshot.lazyTheme,
-        bridge: snapshot.bridge,
-    };
-}
-
-function getCustomCssDebugSnapshot({ includeDiagnostics = true } = {}) {
-    const state = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
-    const originalInput = getCustomCssOriginalInput();
-    const style = document.getElementById(CUSTOM_CSS_STYLE_ID);
-    const shadowInput = extensionState.customCssShadowPropertyInput;
-    const themeSelect = document.getElementById('themes');
-    const lazyThemeState = getLazyThemeChangeGuardState();
-    const bridge = getBaibaokuEarlyBridge();
-    const values = {
-        powerUser: String(power_user.custom_css ?? ''),
-        style: style instanceof HTMLElement ? String(style.textContent ?? '') : null,
-        originalInput: originalInput instanceof HTMLTextAreaElement ? String(originalInput.value ?? '') : null,
-        codeMirrorSource: state?.source instanceof HTMLTextAreaElement ? String(state.source.value ?? '') : null,
-        codeMirrorDoc: state?.view ? getCustomCssCodeMirrorValue(state) : null,
-        shadowVirtual: typeof extensionState.customCssShadowVirtualValue === 'string'
-            ? extensionState.customCssShadowVirtualValue
-            : null,
-    };
-
-    return {
-        version: CURRENT_VERSION,
-        theme: String(power_user.theme ?? ''),
-        themeSelectValue: themeSelect instanceof HTMLSelectElement ? String(themeSelect.value || '') : null,
-        visibilityState: typeof document !== 'undefined' ? document.visibilityState : '',
-        documentHidden: typeof document !== 'undefined' ? document.hidden : false,
-        timestamp: new Date().toISOString(),
-        summaries: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, summarizeCustomCssDebugValue(value)])),
-        matches: {
-            stylePowerUser: compareCustomCssDebugValues(values.style, values.powerUser),
-            originalInputPowerUser: compareCustomCssDebugValues(values.originalInput, values.powerUser),
-            codeMirrorSourcePowerUser: compareCustomCssDebugValues(values.codeMirrorSource, values.powerUser),
-            codeMirrorDocPowerUser: compareCustomCssDebugValues(values.codeMirrorDoc, values.powerUser),
-            shadowVirtualPowerUser: compareCustomCssDebugValues(values.shadowVirtual, values.powerUser),
-        },
-        shadow: {
-            enabled: Boolean(settings.customCssShadowPropertyEnabled),
-            installed: Boolean(extensionState.customCssShadowPropertyInstalled),
-            inputConnected: shadowInput instanceof HTMLTextAreaElement ? shadowInput.isConnected : false,
-            inputIsCurrent: Boolean(originalInput && shadowInput === originalInput),
-        },
-        settings: {
-            customCssInputOptimizationEnabled: Boolean(settings.customCssInputOptimizationEnabled),
-            customCssShadowPropertyEnabled: Boolean(settings.customCssShadowPropertyEnabled),
-            baibaokuSettingsAccelerationEnabled: settings.baibaokuSettingsAccelerationEnabled !== false,
-            baibaokuLazyThemeLoadingEnabled: settings.baibaokuLazyThemeLoadingEnabled !== false,
-        },
-        codeMirror: {
-            enabled: Boolean(state?.enabled),
-            hasView: Boolean(state?.view),
-            dirty: Boolean(state?.dirty),
-            flushing: Boolean(state?.flushing),
-            syncingFromSource: Boolean(state?.syncingFromSource),
-            themeSyncPending: Boolean(state?.themeSyncPending),
-            themeSyncToken: Number(state?.themeSyncToken || 0),
-            refreshFrameActive: Boolean(state?.refreshFrame),
-            sourceConnected: state?.source instanceof HTMLTextAreaElement ? state.source.isConnected : false,
-            wrapperConnected: state?.wrapper instanceof HTMLElement ? state.wrapper.isConnected : false,
-            colorScheme: state?.colorScheme || '',
-        },
-        diagnosticRecording: {
-            active: Boolean(extensionState.customCssDiagnosticRecording),
-            startedAt: extensionState.customCssDiagnosticRecordingStartedAt || '',
-            stoppedAt: extensionState.customCssDiagnosticRecordingStoppedAt || '',
-            eventIndex: Number(extensionState.customCssDiagnosticEventIndex || 0),
-        },
-        lazyTheme: {
-            installed: Boolean(lazyThemeState?.installed),
-            pending: Boolean(lazyThemeState?.pending),
-            replaying: Boolean(lazyThemeState?.replaying),
-            currentThemeName: String(lazyThemeState?.currentThemeName || ''),
-            loading: Boolean(lazyThemeState?.loadingToken),
-        },
-        bridge: {
-            present: Boolean(bridge),
-            installed: Boolean(bridge?.installed),
-            settingsAccelerationEnabled: typeof bridge?.isSettingsAccelerationEnabled === 'function'
-                ? Boolean(bridge.isSettingsAccelerationEnabled())
-                : bridge?.settingsAccelerationEnabled !== false,
-            lazyThemeLoadingEnabled: typeof bridge?.isLazyThemeLoadingEnabled === 'function'
-                ? Boolean(bridge.isLazyThemeLoadingEnabled())
-                : bridge?.lazyThemeLoadingEnabled !== false,
-        },
-        diagnostics: includeDiagnostics ? getCustomCssDiagnosticLog().slice() : undefined,
-    };
-}
-
-function stringifyCustomCssDiagnosticPayload(payload) {
-    try {
-        const seen = new WeakSet();
-        return JSON.stringify(payload, (key, value) => {
-            if (typeof value === 'bigint') {
-                return `${value}n`;
-            }
-
-            if (typeof value === 'function') {
-                return `[Function ${value.name || 'anonymous'}]`;
-            }
-
-            if (value instanceof Error) {
-                return formatCustomCssDiagnosticError(value);
-            }
-
-            if (typeof Element !== 'undefined' && value instanceof Element) {
-                return describeCustomCssDiagnosticElement(value);
-            }
-
-            if (value && typeof value === 'object') {
-                if (seen.has(value)) {
-                    return '[Circular]';
-                }
-
-                seen.add(value);
-            }
-
-            return value;
-        }, 2);
-    } catch (error) {
-        return JSON.stringify({
-            stringifyError: formatCustomCssDiagnosticError(error),
-            fallback: String(payload),
-        }, null, 2);
-    }
-}
-
-function formatCustomCssDiagnosticError(error) {
-    return {
-        name: String(error?.name || 'Error'),
-        message: String(error?.message || error || ''),
-        stack: typeof error?.stack === 'string' ? error.stack : '',
-    };
-}
-
-function describeCustomCssDiagnosticElement(element) {
-    return {
-        tagName: element.tagName,
-        id: element.id || '',
-        className: typeof element.className === 'string' ? element.className : '',
-        name: element.getAttribute?.('name') || '',
-        dataFor: element.getAttribute?.('data-for') || '',
-        connected: Boolean(element.isConnected),
-    };
-}
-
-function shouldRecordCustomCssValueChange(reason, changed = true) {
-    if (!changed) {
-        return false;
-    }
-
-    const state = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
-
-    if (extensionState.customCssThemeApplyDepth > 0 || state?.themeSyncPending) {
-        return true;
-    }
-
-    if (typeof document !== 'undefined' && (document.hidden || document.visibilityState !== 'visible')) {
-        return true;
-    }
-
-    return /theme|restore|lifecycle|flush|target|disable|maximize|external|apply/i.test(String(reason || ''));
-}
-
-function summarizeCustomCssDebugValue(value) {
-    if (value === null || value === undefined) {
-        return null;
-    }
-
-    const text = String(value);
-    return {
-        length: text.length,
-        hash: hashCustomCssDebugValue(text),
-    };
-}
-
-function compareCustomCssDebugValues(left, right) {
-    if (left === null || left === undefined || right === null || right === undefined) {
-        return null;
-    }
-
-    return String(left) === String(right);
-}
-
-function hashCustomCssDebugValue(value) {
-    let hash = 0x811c9dc5;
-
-    for (let index = 0; index < value.length; index += 1) {
-        hash ^= value.charCodeAt(index);
-        hash = Math.imul(hash, 0x01000193);
-    }
-
-    return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
 function applyCustomCssStyleText(reason = 'apply custom css style text') {
     let style = document.getElementById(CUSTOM_CSS_STYLE_ID);
     const value = String(power_user.custom_css ?? '');
@@ -4895,21 +4267,10 @@ function applyCustomCssStyleText(reason = 'apply custom css style text') {
         style.type = 'text/css';
         style.id = CUSTOM_CSS_STYLE_ID;
         document.head.append(style);
-        recordCustomCssDiagnostic('custom css style element created', {
-            reason,
-        });
     }
 
     if (style.textContent !== value) {
-        const previousValue = String(style.textContent ?? '');
         style.textContent = value;
-        if (shouldRecordCustomCssValueChange(reason, previousValue !== value)) {
-            recordCustomCssDiagnostic('custom css style text applied', {
-                reason,
-                previous: summarizeCustomCssDebugValue(previousValue),
-                next: summarizeCustomCssDebugValue(value),
-            });
-        }
         return true;
     }
 
@@ -4924,7 +4285,6 @@ function installCustomCssCodeMirrorEditorOptimization() {
     installCustomCssCodeMirrorEditorGlobalListeners(state);
     refreshCustomCssCodeMirrorEditorTarget(state);
     installCustomCssCodeMirrorEditorMutationObserver(state);
-    recordCustomCssDiagnostic('CodeMirror optimization installed', {});
 }
 
 function removeCustomCssCodeMirrorEditorOptimization() {
@@ -4954,7 +4314,6 @@ function removeCustomCssCodeMirrorEditorOptimization() {
     state.globalListeners = [];
     removeCustomCssCodeMirrorEditorStyle();
     delete extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
-    recordCustomCssDiagnostic('CodeMirror optimization removed', {});
 }
 
 function getCustomCssCodeMirrorEditorState() {
@@ -5025,10 +4384,6 @@ function installCustomCssCodeMirrorEditorGlobalListeners(state) {
         }
     };
     const pageLifecycleHandler = (event) => {
-        recordCustomCssDiagnostic('CodeMirror page lifecycle', {
-            eventType: String(event?.type || ''),
-            isRestore: isCustomCssPageRestoreEvent(event),
-        });
 
         if (isCustomCssPageRestoreEvent(event)) {
             scheduleCustomCssStateRestoreSync(`CodeMirror ${event?.type || 'restore'}`);
@@ -5047,9 +4402,6 @@ function installCustomCssCodeMirrorEditorGlobalListeners(state) {
         const target = event.target;
 
         if (target instanceof HTMLSelectElement && target.id === 'themes') {
-            recordCustomCssDiagnostic('native theme change observed for CodeMirror sync', {
-                selectedTheme: String(target.value || ''),
-            });
             scheduleCustomCssCodeMirrorThemeSync();
         }
     };
@@ -5268,9 +4620,6 @@ function scheduleCustomCssCodeMirrorEditorRefresh(state = extensionState[CUSTOM_
         return;
     }
 
-    recordCustomCssDiagnostic('CodeMirror refresh scheduled', {
-        colorSchemeDirty: Boolean(colorSchemeDirty),
-    });
 
     state.refreshFrame = requestAnimationFrame(() => {
         state.refreshFrame = 0;
@@ -5288,7 +4637,6 @@ function refreshCustomCssCodeMirrorEditorTarget(state) {
     const source = getCustomCssCodeMirrorSource();
 
     if (!(source instanceof HTMLTextAreaElement) || !source.isConnected) {
-        recordCustomCssDiagnostic('CodeMirror target removed', {});
         flushCustomCssCodeMirrorEditor('target removed', { apply: true, save: true });
         detachCustomCssCodeMirrorEditor(state);
         bindCustomCssCodeMirrorEditorMutationObserver(state);
@@ -5302,16 +4650,9 @@ function refreshCustomCssCodeMirrorEditorTarget(state) {
         }
         syncCustomCssCodeMirrorFromSourceIfClean(state);
         bindCustomCssCodeMirrorEditorMutationObserver(state);
-        recordCustomCssDiagnostic('CodeMirror target refreshed in place', {
-            source: describeCustomCssDiagnosticElement(source),
-        }, { silent: true });
         return;
     }
 
-    recordCustomCssDiagnostic('CodeMirror target switching', {
-        previousSource: typeof Element !== 'undefined' && state.source instanceof Element ? describeCustomCssDiagnosticElement(state.source) : null,
-        nextSource: describeCustomCssDiagnosticElement(source),
-    });
     flushCustomCssCodeMirrorEditor('target switch', { apply: true, save: true });
     detachCustomCssCodeMirrorEditor(state);
     attachCustomCssCodeMirrorEditor(state, source);
@@ -5347,10 +4688,6 @@ function attachCustomCssCodeMirrorEditor(state, source) {
     state.wrapper = wrapper;
     state.dirty = false;
     syncCustomCssCodeMirrorThemeEditorHeight(state);
-    recordCustomCssDiagnostic('CodeMirror attaching', {
-        source: describeCustomCssDiagnosticElement(source),
-        sourceValue: summarizeCustomCssDebugValue(source.value),
-    });
 
     const focusOutHandler = () => {
         setTimeout(() => {
@@ -5378,9 +4715,6 @@ function attachCustomCssCodeMirrorEditor(state, source) {
             createCustomCssCodeMirrorView(state, source, wrapper, modules);
         })
         .catch((error) => {
-            recordCustomCssDiagnostic('CodeMirror load failed', {
-                error: formatCustomCssDiagnosticError(error),
-            }, { consoleLevel: 'warn' });
 
             if (state.enabled && state.source === source && state.wrapper === wrapper && state.loadingToken === loadingToken) {
                 state.enabled = false;
@@ -5622,12 +4956,6 @@ function createCustomCssCodeMirrorView(state, source, wrapper, modules) {
         parent: wrapper,
     });
     syncCustomCssCodeMirrorThemeEditorHeight(state);
-    recordCustomCssDiagnostic('CodeMirror view created', {
-        source: describeCustomCssDiagnosticElement(source),
-        doc: summarizeCustomCssDebugValue(getCustomCssCodeMirrorValue(state)),
-        useHistory,
-        colorScheme,
-    });
 }
 
 function getCustomCssHighlightExtension({ colorScheme, defaultHighlightStyle, HighlightStyle, syntaxHighlighting, classHighlighter, tags, oneDarkHighlightStyle }) {
@@ -5692,11 +5020,6 @@ function detachCustomCssCodeMirrorEditor(state) {
         return;
     }
 
-    recordCustomCssDiagnostic('CodeMirror detaching', {
-        source: typeof Element !== 'undefined' && state.source instanceof Element ? describeCustomCssDiagnosticElement(state.source) : null,
-        hasView: Boolean(state.view),
-        dirty: Boolean(state.dirty),
-    });
 
     for (const listener of state.listeners || []) {
         listener.target.removeEventListener(listener.type, listener.handler, listener.options);
@@ -5831,8 +5154,6 @@ function syncCustomCssCodeMirrorToSource(state, reason = 'CodeMirror sync to sou
     const sourceChanged = state.source.value !== value;
     let originalChanged = false;
     const settingsChanged = power_user.custom_css !== value;
-    const previousSourceValue = String(state.source.value ?? '');
-    const previousPowerUserValue = String(power_user.custom_css ?? '');
 
     if (sourceChanged) {
         state.source.value = value;
@@ -5849,18 +5170,6 @@ function syncCustomCssCodeMirrorToSource(state, reason = 'CodeMirror sync to sou
 
     if (settingsChanged) {
         power_user.custom_css = value;
-    }
-
-    if (shouldRecordCustomCssValueChange(reason, sourceChanged || originalChanged || settingsChanged)) {
-        recordCustomCssDiagnostic('CodeMirror synced to source', {
-            reason,
-            sourceChanged,
-            originalChanged,
-            settingsChanged,
-            previousSource: summarizeCustomCssDebugValue(previousSourceValue),
-            previousPowerUser: summarizeCustomCssDebugValue(previousPowerUserValue),
-            next: summarizeCustomCssDebugValue(value),
-        });
     }
 
     return sourceChanged || originalChanged || settingsChanged;
@@ -5882,14 +5191,6 @@ function syncCustomCssCodeMirrorFromSourceIfClean(state) {
 
 function syncCustomCssCodeMirrorFromSource(state, { force = false } = {}) {
     if ((!force && state.dirty) || !(state.source instanceof HTMLTextAreaElement) || !state.view) {
-        if (state?.view && shouldRecordCustomCssValueChange('CodeMirror sync from source skipped', Boolean(state?.dirty && !force))) {
-            recordCustomCssDiagnostic('CodeMirror sync from source skipped', {
-                force,
-                dirty: Boolean(state.dirty),
-                hasSource: state.source instanceof HTMLTextAreaElement,
-                hasView: Boolean(state.view),
-            });
-        }
         return;
     }
 
@@ -5912,11 +5213,6 @@ function syncCustomCssCodeMirrorFromSource(state, { force = false } = {}) {
             state.syncingFromSource = false;
         }
 
-        recordCustomCssDiagnostic('CodeMirror synced from source', {
-            force,
-            previousDoc: summarizeCustomCssDebugValue(current),
-            nextDoc: summarizeCustomCssDebugValue(value),
-        });
 
         return true;
     }
@@ -5943,11 +5239,6 @@ function flushCustomCssCodeMirrorEditor(reason, { apply = false, save = true } =
         // Skip the write-back; refill the DOM/editor from custom_css instead.
         // Deferred settle passes will repeat this when the tab returns.
         if (state.themeSyncPending) {
-            recordCustomCssDiagnostic('CodeMirror flush skipped by pending theme sync', {
-                reason,
-                apply,
-                save,
-            });
             syncCustomCssStateFromSettings(`${reason} while theme sync is pending`, {
                 forceEditor: true,
                 refreshTarget: false,
@@ -5959,18 +5250,6 @@ function flushCustomCssCodeMirrorEditor(reason, { apply = false, save = true } =
 
         const externalMismatch = getCleanCustomCssCodeMirrorExternalMismatch(state);
         if (externalMismatch) {
-            recordCustomCssDiagnostic('CodeMirror flush redirected by clean external state', {
-                reason,
-                apply,
-                save,
-                doc: summarizeCustomCssDebugValue(externalMismatch.doc),
-                source: summarizeCustomCssDebugValue(externalMismatch.source),
-                powerUser: summarizeCustomCssDebugValue(externalMismatch.powerUser),
-                style: summarizeCustomCssDebugValue(externalMismatch.style),
-                sourceMatchesPowerUser: externalMismatch.sourceMatchesPowerUser,
-                styleMatchesPowerUser: externalMismatch.styleMatchesPowerUser,
-            });
-
             syncCustomCssStateFromSettings(`${reason} clean external state before flush`, {
                 forceEditor: true,
                 refreshTarget: false,
@@ -5984,22 +5263,12 @@ function flushCustomCssCodeMirrorEditor(reason, { apply = false, save = true } =
             return false;
         }
 
-        const wasDirty = Boolean(state.dirty);
         const changed = syncCustomCssCodeMirrorToSource(state, reason) || state.dirty;
         state.dirty = false;
 
         if (changed && save) {
             saveSettingsDebounced();
         }
-
-        recordCustomCssDiagnostic('CodeMirror flushed', {
-            reason,
-            changed,
-            wasDirty,
-            apply,
-            save,
-            saved: Boolean(changed && save),
-        });
 
         if (apply) {
             flushCustomCssApply(reason);
