@@ -5957,6 +5957,33 @@ function flushCustomCssCodeMirrorEditor(reason, { apply = false, save = true } =
             return false;
         }
 
+        const externalMismatch = getCleanCustomCssCodeMirrorExternalMismatch(state);
+        if (externalMismatch) {
+            recordCustomCssDiagnostic('CodeMirror flush redirected by clean external state', {
+                reason,
+                apply,
+                save,
+                doc: summarizeCustomCssDebugValue(externalMismatch.doc),
+                source: summarizeCustomCssDebugValue(externalMismatch.source),
+                powerUser: summarizeCustomCssDebugValue(externalMismatch.powerUser),
+                style: summarizeCustomCssDebugValue(externalMismatch.style),
+                sourceMatchesPowerUser: externalMismatch.sourceMatchesPowerUser,
+                styleMatchesPowerUser: externalMismatch.styleMatchesPowerUser,
+            });
+
+            syncCustomCssStateFromSettings(`${reason} clean external state before flush`, {
+                forceEditor: true,
+                refreshTarget: false,
+                clearThemePending: false,
+            });
+
+            if (apply) {
+                flushCustomCssApply(reason);
+            }
+
+            return false;
+        }
+
         const wasDirty = Boolean(state.dirty);
         const changed = syncCustomCssCodeMirrorToSource(state, reason) || state.dirty;
         state.dirty = false;
@@ -5982,6 +6009,38 @@ function flushCustomCssCodeMirrorEditor(reason, { apply = false, save = true } =
     } finally {
         state.flushing = false;
     }
+}
+
+function getCleanCustomCssCodeMirrorExternalMismatch(state) {
+    if (state?.dirty || !(state?.source instanceof HTMLTextAreaElement) || !state.view) {
+        return null;
+    }
+
+    const doc = getCustomCssCodeMirrorValue(state);
+    const source = String(state.source.value ?? '');
+    const powerUserValue = String(power_user.custom_css ?? '');
+    const style = String(document.getElementById(CUSTOM_CSS_STYLE_ID)?.textContent ?? '');
+    const sourceMatchesPowerUser = source === powerUserValue;
+    const styleMatchesPowerUser = style === powerUserValue;
+    const docMatchesSource = doc === source;
+    const docMatchesPowerUser = doc === powerUserValue;
+
+    if (docMatchesSource && docMatchesPowerUser) {
+        return null;
+    }
+
+    if (!docMatchesPowerUser && (sourceMatchesPowerUser || styleMatchesPowerUser)) {
+        return {
+            doc,
+            source,
+            powerUser: powerUserValue,
+            style,
+            sourceMatchesPowerUser,
+            styleMatchesPowerUser,
+        };
+    }
+
+    return null;
 }
 
 function applyCustomCssCodeMirrorEditorStyle() {
