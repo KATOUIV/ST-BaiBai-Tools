@@ -23,7 +23,7 @@ import { sendMessageAs } from '../../../slash-commands.js';
 import { isAdmin } from '../../../user.js';
 import { debounce, download, getCharaFilename, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4 } from '../../../utils.js';
 import { getCurrentPresetAPI as getRegexCurrentPresetAPI, getCurrentPresetName as getRegexCurrentPresetName, getScriptsByType as getRegexScriptsByType, runRegexScript, SCRIPT_TYPES as REGEX_SCRIPT_TYPES, substitute_find_regex } from '../../regex/engine.js';
-const CURRENT_VERSION = '0.28.1';
+const CURRENT_VERSION = '0.28.2';
 const LOCAL_ASSET_VERSION = getLocalAssetVersion(CURRENT_VERSION);
 const { SaveGenerateDisplay } = await importVersionedLocalModule('./saveGenerateDisplay.js');
 const chatOptimizations = await importVersionedLocalModule('./chatOptimizations.js');
@@ -205,7 +205,6 @@ const CUSTOM_CSS_CODEMIRROR_EXTERNAL_READ_SELECTOR = [
 const CUSTOM_CSS_DARK_BACKGROUND_LUMINANCE_THRESHOLD = 0.45;
 const CUSTOM_CSS_THEME_SYNC_SETTLE_DELAYS_MS = [0, 50, 160, 500, 1000];
 const CUSTOM_CSS_RESTORE_SYNC_SETTLE_DELAYS_MS = [0, 80, 200, 500];
-const CUSTOM_CSS_DEBUG_FUNCTION_NAME = 'baiBaiToolkitDebugCustomCss';
 const DESCRIPTION_CODEMIRROR_CDN_MODULES = {
     state: 'https://esm.sh/@codemirror/state@6?bundle',
     view: 'https://esm.sh/@codemirror/view@6?bundle',
@@ -374,6 +373,7 @@ const defaultSettings = {
     presetToggleOptimizationEnabled: true,
     presetGroupingEnabled: true,
     presetGroupingEditButtonInMenuEnabled: false,
+    presetInterfaceCollapseEnabled: true,
     presetPromptCodeMirrorEditorEnabled: false,
     presetAutoSaveAfterPromptEditEnabled: false,
     regexQuickOperationOptimizationEnabled: true,
@@ -932,6 +932,7 @@ function setBaibaokuThemeSelectBusy(target, busy) {
 }
 
 function syncCustomCssCodeMirrorFromThemeChange() {
+
     return syncCustomCssStateFromSettings('theme change', {
         forceEditor: true,
         refreshTarget: true,
@@ -972,12 +973,12 @@ function scheduleCustomCssCodeMirrorThemeSync() {
         }
 
         try {
-            if (syncCustomCssCodeMirrorFromThemeChange()) {
-                console.debug(`${LOG_PREFIX} CodeMirror custom CSS editor synced after theme change (${phase})`);
+            const complete = syncCustomCssCodeMirrorFromThemeChange();
+
+            if (complete) {
                 clearCustomCssCodeMirrorThemeSyncTimers(state);
             }
         } catch (error) {
-            console.debug(`${LOG_PREFIX} Failed to sync CodeMirror custom CSS editor after theme change`, error);
         }
     };
 
@@ -1100,50 +1101,62 @@ function applyBaibaokuThemeObject(theme, fallbackName) {
 
     const applyNativeTheme = globalThis.baibaokuApplyNativeTheme;
     const hydrateTheme = globalThis.baibaokuHydrateTheme;
+    let applyPath = 'unknown';
 
-    if (typeof applyNativeTheme === 'function' && typeof hydrateTheme === 'function') {
-        // Preferred path: hydrate the native `themes` array with the freshly
-        // fetched full theme, then delegate to the native applyTheme so lazy
-        // switching runs the exact same code path as a normal theme switch.
-        // This avoids the chronic "this style switched but that one didn't"
-        // drift that comes from maintaining a parallel subset of applyTheme.
-        hydrateTheme({ ...theme, name: themeName });
-        power_user.theme = themeName;
-        setBaibaokuSelectValue('themes', themeName);
-        applyNativeTheme(themeName);
-        saveSettingsDebounced();
-    } else {
-        // Fallback for when the backend theme bridge has not patched
-        // power-user.js (older install, patch failed, etc.). Keep the legacy
-        // best-effort application so behavior never regresses to "no switch".
-        const oldChatDisplay = power_user.chat_display;
-        const oldToastrPosition = power_user.toastr_position;
-        power_user.theme = themeName;
-        for (const key of BAIBAOKU_THEME_POWER_USER_KEYS) {
-            if (theme[key] !== undefined) {
-                power_user[key] = theme[key];
+
+    extensionState.customCssThemeApplyDepth = (extensionState.customCssThemeApplyDepth || 0) + 1;
+
+    try {
+        if (typeof applyNativeTheme === 'function' && typeof hydrateTheme === 'function') {
+            applyPath = 'native bridge';
+            // Preferred path: hydrate the native `themes` array with the freshly
+            // fetched full theme, then delegate to the native applyTheme so lazy
+            // switching runs the exact same code path as a normal theme switch.
+            // This avoids the chronic "this style switched but that one didn't"
+            // drift that comes from maintaining a parallel subset of applyTheme.
+            hydrateTheme({ ...theme, name: themeName });
+            power_user.theme = themeName;
+            setBaibaokuSelectValue('themes', themeName);
+            applyNativeTheme(themeName);
+            saveSettingsDebounced();
+        } else {
+            applyPath = 'fallback';
+            // Fallback for when the backend theme bridge has not patched
+            // power-user.js (older install, patch failed, etc.). Keep the legacy
+            // best-effort application so behavior never regresses to "no switch".
+            const oldChatDisplay = power_user.chat_display;
+            const oldToastrPosition = power_user.toastr_position;
+            power_user.theme = themeName;
+            for (const key of BAIBAOKU_THEME_POWER_USER_KEYS) {
+                if (theme[key] !== undefined) {
+                    power_user[key] = theme[key];
+                }
             }
+
+            setBaibaokuSelectValue('themes', themeName);
+            applyBaibaokuThemeColorBindings();
+            applyBaibaokuThemeSelectState();
+            applyPowerUserSettings();
+            setBaibaokuSelectValue('themes', themeName);
+            applyBaibaokuThemeColorBindings();
+            applyBaibaokuThemeSelectState();
+            if (oldChatDisplay !== power_user.chat_display) {
+                $('#chat_display').trigger('change');
+            }
+            if (oldToastrPosition !== power_user.toastr_position) {
+                $('#toastr_position').trigger('change');
+            }
+            saveSettingsDebounced();
         }
 
-        setBaibaokuSelectValue('themes', themeName);
-        applyBaibaokuThemeColorBindings();
-        applyBaibaokuThemeSelectState();
-        applyPowerUserSettings();
-        setBaibaokuSelectValue('themes', themeName);
-        applyBaibaokuThemeColorBindings();
-        applyBaibaokuThemeSelectState();
-        if (oldChatDisplay !== power_user.chat_display) {
-            $('#chat_display').trigger('change');
-        }
-        if (oldToastrPosition !== power_user.toastr_position) {
-            $('#toastr_position').trigger('change');
-        }
-        saveSettingsDebounced();
+    } catch (error) {
+        throw error;
+    } finally {
+        extensionState.customCssThemeApplyDepth = Math.max(0, (extensionState.customCssThemeApplyDepth || 1) - 1);
     }
 
     scheduleCustomCssCodeMirrorThemeSync();
     syncThemeManagerAfterLazyThemeApply(themeName);
-    console.log(`${LOG_PREFIX} theme applied: ${themeName}`);
 }
 
 function applyBaibaokuLazyThemeLoadingOptimization() {
@@ -1163,6 +1176,7 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
             return;
         }
 
+
         if (settings.baibaokuSettingsAccelerationEnabled === false || settings.baibaokuLazyThemeLoadingEnabled === false) {
             state.currentThemeName = themeName;
             return;
@@ -1178,8 +1192,9 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
         event.stopImmediatePropagation();
 
         const previousThemeName = state.currentThemeName || String(power_user?.theme || '');
+        let cachedPreviousTheme = false;
         if (previousThemeName && previousThemeName !== themeName) {
-            cacheBaibaokuCurrentThemeSnapshot(previousThemeName);
+            cachedPreviousTheme = cacheBaibaokuCurrentThemeSnapshot(previousThemeName);
         }
         const loadingToken = showBaibaokuThemeLoadingOverlay(state, target);
         setBaibaokuThemeSelectBusy(target, true);
@@ -1199,7 +1214,6 @@ function applyBaibaokuLazyThemeLoadingOptimization() {
                 if (globalThis.toastr?.error) {
                     globalThis.toastr.error(`美化主题加载失败：${error?.message || String(error)}`, '柏宝库');
                 }
-                console.warn(`${LOG_PREFIX} Failed to lazy-load theme`, error);
             })
             .finally(() => {
                 if (state.loadingToken === loadingToken) {
@@ -3824,9 +3838,9 @@ function applyFeatureSettings() {
     applyCharacterListAvatarLazyLoadOptimization();
     applyFastChatGetOptimization();
     applyDescriptionCodeMirrorEditorOptimization();
-    installCustomCssDebugFunction();
     applyCustomCssInputOptimization();
     presetOptimizations.applyPresetScrollOptimization();
+    presetOptimizations.applyPresetInterfaceCollapse();
     presetOptimizations.applyPresetDragOptimization();
     presetOptimizations.applyPresetGrouping();
     presetOptimizations.applyPresetBackupPreviewUi();
@@ -3850,6 +3864,7 @@ function applyFeatureSettings() {
 }
 
 function applyCustomCssInputOptimization() {
+
     if (settings.customCssShadowPropertyEnabled) {
         installCustomCssShadowPropertyOptimization();
     } else {
@@ -3914,7 +3929,6 @@ function installCustomCssShadowPropertyOnInput(input, initialValue = '') {
 
     extensionState.customCssShadowPropertyInstalled = true;
     extensionState.customCssShadowPropertyInput = input;
-    console.debug(`${LOG_PREFIX} Custom CSS shadow property optimization installed`);
 
     return true;
 }
@@ -3944,7 +3958,6 @@ function removeCustomCssShadowPropertyOptimization() {
     extensionState.customCssShadowPropertyInstalled = false;
     extensionState.customCssShadowPropertyInput = null;
     extensionState.customCssShadowVirtualValue = '';
-    console.debug(`${LOG_PREFIX} Custom CSS shadow property optimization removed`);
 }
 
 function restoreCustomCssShadowPropertyInput(input) {
@@ -3981,10 +3994,10 @@ function installCustomCssInputOptimization() {
 
         const codeMirrorSynced = syncCustomCssCodeMirrorFromExternalSource(input);
 
-        commitCustomCssInputValue(input);
+        commitCustomCssInputValue(input, 'input event');
 
         if (codeMirrorSynced || !event.isTrusted) {
-            flushCustomCssApply();
+            flushCustomCssApply('input event');
         }
     };
     const compositionStartHandler = (event) => {
@@ -4008,7 +4021,7 @@ function installCustomCssInputOptimization() {
             extensionState.customCssInputComposing = false;
             extensionState.customCssInputCompositionCommitPending = false;
             syncCustomCssCodeMirrorFromExternalSource(input);
-            commitCustomCssInputValue(input);
+            commitCustomCssInputValue(input, 'composition end');
         }, 0);
     };
     const flushHandler = (event) => {
@@ -4018,17 +4031,18 @@ function installCustomCssInputOptimization() {
             extensionState.customCssInputComposing = false;
             extensionState.customCssInputCompositionCommitPending = false;
             clearCustomCssCompositionEndTimer();
-            commitCustomCssInputValue(input);
-            flushCustomCssApply();
+            commitCustomCssInputValue(input, `${event?.type || 'flush'} event`);
+            flushCustomCssApply(`${event?.type || 'flush'} event`);
         }
     };
     const pageLifecycleHandler = (event) => {
+
         if (isCustomCssPageRestoreEvent(event)) {
             scheduleCustomCssStateRestoreSync(`input optimization ${event?.type || 'restore'}`);
             return;
         }
 
-        flushCurrentCustomCssInput();
+        flushCurrentCustomCssInput(`input optimization ${event?.type || 'page lifecycle'}`);
     };
 
     document.addEventListener('input', inputHandler, true);
@@ -4057,7 +4071,7 @@ function removeCustomCssInputOptimization() {
         return;
     }
 
-    flushCurrentCustomCssInput();
+    flushCurrentCustomCssInput('remove input optimization');
     clearCustomCssCompositionEndTimer();
     extensionState.customCssInputComposing = false;
     extensionState.customCssInputCompositionCommitPending = false;
@@ -4084,7 +4098,7 @@ function getCustomCssInputFromEvent(event) {
     return target;
 }
 
-function commitCustomCssInputValue(input) {
+function commitCustomCssInputValue(input, reason = 'input commit') {
     if (!(input instanceof HTMLTextAreaElement) || input.id !== CUSTOM_CSS_INPUT_ID) {
         return;
     }
@@ -4100,15 +4114,15 @@ function clearCustomCssCompositionEndTimer() {
     }
 }
 
-function flushCustomCssApply() {
-    applyCustomCssStyleText();
+function flushCustomCssApply(reason = 'flush custom css apply') {
+    applyCustomCssStyleText(reason);
 }
 
-function flushCurrentCustomCssInput() {
+function flushCurrentCustomCssInput(reason = 'current input flush') {
     const codeMirrorState = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
 
     if (codeMirrorState?.themeSyncPending) {
-        syncCustomCssStateFromSettings('current input flush while theme sync is pending', {
+        syncCustomCssStateFromSettings(`${reason} while theme sync is pending`, {
             forceEditor: true,
             refreshTarget: true,
             clearThemePending: false,
@@ -4116,7 +4130,7 @@ function flushCurrentCustomCssInput() {
         return;
     }
 
-    if (flushCustomCssCodeMirrorEditor('current input flush', { apply: true, save: true })) {
+    if (flushCustomCssCodeMirrorEditor(reason, { apply: true, save: true })) {
         return;
     }
 
@@ -4126,10 +4140,10 @@ function flushCurrentCustomCssInput() {
         extensionState.customCssInputComposing = false;
         extensionState.customCssInputCompositionCommitPending = false;
         clearCustomCssCompositionEndTimer();
-        commitCustomCssInputValue(input);
+        commitCustomCssInputValue(input, reason);
     }
 
-    flushCustomCssApply();
+    flushCustomCssApply(reason);
 }
 
 function syncCustomCssStateFromSettings(reason = 'custom css settings sync', {
@@ -4183,7 +4197,7 @@ function syncCustomCssStateFromSettings(reason = 'custom css settings sync', {
         }
     }
 
-    applyCustomCssStyleText();
+    applyCustomCssStyleText(reason);
 
     const style = document.getElementById(CUSTOM_CSS_STYLE_ID);
     const styleSynced = style?.textContent === value;
@@ -4194,14 +4208,7 @@ function syncCustomCssStateFromSettings(reason = 'custom css settings sync', {
     }
 
     if (!complete) {
-        console.debug(`${LOG_PREFIX} Custom CSS state sync incomplete after ${reason}`, {
-            originalInputSynced,
-            sourceSynced,
-            editorSynced,
-            styleSynced,
-            forceEditor,
-            refreshTarget,
-        });
+    } else {
     }
 
     return complete;
@@ -4220,7 +4227,7 @@ function scheduleCustomCssStateRestoreSync(reason = 'page restore') {
         }
 
         const state = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
-        syncCustomCssStateFromSettings(`${reason} (${phase})`, {
+        const complete = syncCustomCssStateFromSettings(`${reason} (${phase})`, {
             forceEditor: Boolean(state?.themeSyncPending),
             refreshTarget: true,
             clearThemePending: true,
@@ -4251,94 +4258,7 @@ function isCustomCssPageRestoreEvent(event) {
     return event?.type === 'visibilitychange' && document.visibilityState !== 'hidden';
 }
 
-function installCustomCssDebugFunction() {
-    if (typeof globalThis === 'undefined') {
-        return;
-    }
-
-    globalThis[CUSTOM_CSS_DEBUG_FUNCTION_NAME] = getCustomCssDebugSnapshot;
-}
-
-function getCustomCssDebugSnapshot() {
-    const state = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
-    const originalInput = getCustomCssOriginalInput();
-    const style = document.getElementById(CUSTOM_CSS_STYLE_ID);
-    const shadowInput = extensionState.customCssShadowPropertyInput;
-    const values = {
-        powerUser: String(power_user.custom_css ?? ''),
-        style: style instanceof HTMLElement ? String(style.textContent ?? '') : null,
-        originalInput: originalInput instanceof HTMLTextAreaElement ? String(originalInput.value ?? '') : null,
-        codeMirrorSource: state?.source instanceof HTMLTextAreaElement ? String(state.source.value ?? '') : null,
-        codeMirrorDoc: state?.view ? getCustomCssCodeMirrorValue(state) : null,
-        shadowVirtual: typeof extensionState.customCssShadowVirtualValue === 'string'
-            ? extensionState.customCssShadowVirtualValue
-            : null,
-    };
-
-    return {
-        version: CURRENT_VERSION,
-        theme: String(power_user.theme ?? ''),
-        visibilityState: typeof document !== 'undefined' ? document.visibilityState : '',
-        documentHidden: typeof document !== 'undefined' ? document.hidden : false,
-        timestamp: new Date().toISOString(),
-        summaries: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, summarizeCustomCssDebugValue(value)])),
-        matches: {
-            stylePowerUser: compareCustomCssDebugValues(values.style, values.powerUser),
-            originalInputPowerUser: compareCustomCssDebugValues(values.originalInput, values.powerUser),
-            codeMirrorSourcePowerUser: compareCustomCssDebugValues(values.codeMirrorSource, values.powerUser),
-            codeMirrorDocPowerUser: compareCustomCssDebugValues(values.codeMirrorDoc, values.powerUser),
-            shadowVirtualPowerUser: compareCustomCssDebugValues(values.shadowVirtual, values.powerUser),
-        },
-        shadow: {
-            enabled: Boolean(settings.customCssShadowPropertyEnabled),
-            installed: Boolean(extensionState.customCssShadowPropertyInstalled),
-            inputConnected: shadowInput instanceof HTMLTextAreaElement ? shadowInput.isConnected : false,
-            inputIsCurrent: Boolean(originalInput && shadowInput === originalInput),
-        },
-        codeMirror: {
-            enabled: Boolean(state?.enabled),
-            hasView: Boolean(state?.view),
-            dirty: Boolean(state?.dirty),
-            themeSyncPending: Boolean(state?.themeSyncPending),
-            sourceConnected: state?.source instanceof HTMLTextAreaElement ? state.source.isConnected : false,
-            wrapperConnected: state?.wrapper instanceof HTMLElement ? state.wrapper.isConnected : false,
-            colorScheme: state?.colorScheme || '',
-        },
-    };
-}
-
-function summarizeCustomCssDebugValue(value) {
-    if (value === null || value === undefined) {
-        return null;
-    }
-
-    const text = String(value);
-    return {
-        length: text.length,
-        hash: hashCustomCssDebugValue(text),
-    };
-}
-
-function compareCustomCssDebugValues(left, right) {
-    if (left === null || left === undefined || right === null || right === undefined) {
-        return null;
-    }
-
-    return String(left) === String(right);
-}
-
-function hashCustomCssDebugValue(value) {
-    let hash = 0x811c9dc5;
-
-    for (let index = 0; index < value.length; index += 1) {
-        hash ^= value.charCodeAt(index);
-        hash = Math.imul(hash, 0x01000193);
-    }
-
-    return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
-function applyCustomCssStyleText() {
+function applyCustomCssStyleText(reason = 'apply custom css style text') {
     let style = document.getElementById(CUSTOM_CSS_STYLE_ID);
     const value = String(power_user.custom_css ?? '');
 
@@ -4464,6 +4384,7 @@ function installCustomCssCodeMirrorEditorGlobalListeners(state) {
         }
     };
     const pageLifecycleHandler = (event) => {
+
         if (isCustomCssPageRestoreEvent(event)) {
             scheduleCustomCssStateRestoreSync(`CodeMirror ${event?.type || 'restore'}`);
             return;
@@ -4699,6 +4620,7 @@ function scheduleCustomCssCodeMirrorEditorRefresh(state = extensionState[CUSTOM_
         return;
     }
 
+
     state.refreshFrame = requestAnimationFrame(() => {
         state.refreshFrame = 0;
         refreshCustomCssCodeMirrorEditorTarget(state);
@@ -4793,7 +4715,6 @@ function attachCustomCssCodeMirrorEditor(state, source) {
             createCustomCssCodeMirrorView(state, source, wrapper, modules);
         })
         .catch((error) => {
-            console.warn(`${LOG_PREFIX} CodeMirror custom CSS editor failed; falling back to stock textarea.`, error);
 
             if (state.enabled && state.source === source && state.wrapper === wrapper && state.loadingToken === loadingToken) {
                 state.enabled = false;
@@ -4957,7 +4878,7 @@ function createCustomCssCodeMirrorView(state, source, wrapper, modules) {
                 }
 
                 state.dirty = true;
-                syncCustomCssCodeMirrorToSource(state);
+                syncCustomCssCodeMirrorToSource(state, 'editor doc change');
             }
         }),
         EditorView.theme({
@@ -5099,6 +5020,7 @@ function detachCustomCssCodeMirrorEditor(state) {
         return;
     }
 
+
     for (const listener of state.listeners || []) {
         listener.target.removeEventListener(listener.type, listener.handler, listener.options);
     }
@@ -5133,7 +5055,7 @@ function syncCustomCssCodeMirrorToSourceForExternalRead(state = extensionState[C
         return false;
     }
 
-    return syncCustomCssCodeMirrorToSource(state);
+    return syncCustomCssCodeMirrorToSource(state, 'external read');
 }
 
 function scrollCustomCssCodeMirrorForNativeToolbar(state, button) {
@@ -5223,7 +5145,7 @@ function syncCustomCssCodeMirrorThemeEditorHeight(state) {
     }
 }
 
-function syncCustomCssCodeMirrorToSource(state) {
+function syncCustomCssCodeMirrorToSource(state, reason = 'CodeMirror sync to source') {
     if (!(state.source instanceof HTMLTextAreaElement) || !state.view) {
         return false;
     }
@@ -5291,6 +5213,7 @@ function syncCustomCssCodeMirrorFromSource(state, { force = false } = {}) {
             state.syncingFromSource = false;
         }
 
+
         return true;
     }
 
@@ -5325,22 +5248,68 @@ function flushCustomCssCodeMirrorEditor(reason, { apply = false, save = true } =
             return false;
         }
 
-        const changed = syncCustomCssCodeMirrorToSource(state) || state.dirty;
+        const externalMismatch = getCleanCustomCssCodeMirrorExternalMismatch(state);
+        if (externalMismatch) {
+            syncCustomCssStateFromSettings(`${reason} clean external state before flush`, {
+                forceEditor: true,
+                refreshTarget: false,
+                clearThemePending: false,
+            });
+
+            if (apply) {
+                flushCustomCssApply(reason);
+            }
+
+            return false;
+        }
+
+        const changed = syncCustomCssCodeMirrorToSource(state, reason) || state.dirty;
         state.dirty = false;
 
         if (changed && save) {
             saveSettingsDebounced();
-            console.debug(`${LOG_PREFIX} CodeMirror custom CSS editor flushed after ${reason}`);
         }
 
         if (apply) {
-            flushCustomCssApply();
+            flushCustomCssApply(reason);
         }
 
         return changed;
     } finally {
         state.flushing = false;
     }
+}
+
+function getCleanCustomCssCodeMirrorExternalMismatch(state) {
+    if (state?.dirty || !(state?.source instanceof HTMLTextAreaElement) || !state.view) {
+        return null;
+    }
+
+    const doc = getCustomCssCodeMirrorValue(state);
+    const source = String(state.source.value ?? '');
+    const powerUserValue = String(power_user.custom_css ?? '');
+    const style = String(document.getElementById(CUSTOM_CSS_STYLE_ID)?.textContent ?? '');
+    const sourceMatchesPowerUser = source === powerUserValue;
+    const styleMatchesPowerUser = style === powerUserValue;
+    const docMatchesSource = doc === source;
+    const docMatchesPowerUser = doc === powerUserValue;
+
+    if (docMatchesSource && docMatchesPowerUser) {
+        return null;
+    }
+
+    if (!docMatchesPowerUser && (sourceMatchesPowerUser || styleMatchesPowerUser)) {
+        return {
+            doc,
+            source,
+            powerUser: powerUserValue,
+            style,
+            sourceMatchesPowerUser,
+            styleMatchesPowerUser,
+        };
+    }
+
+    return null;
 }
 
 function applyCustomCssCodeMirrorEditorStyle() {
