@@ -70,6 +70,46 @@ function removePresetDragOptimizationHandlers() {
     delete extensionState[PRESET_DRAG_HANDLER_KEY];
 }
 
+// TauriTavern 宿主检测(issue #50):TT 的 promptmanager.css 把拖拽手柄从绝对
+// 定位改成流内网格第 1 列,在条目上定义该变量(无手柄 0px、有手柄 28px),并给
+// 名称/控件/token 显式指定 grid-column 2/3/4。原生 ST 不定义此变量。
+const PRESET_PROMPT_HANDLE_COLUMN_VARIABLE = '--completion-prompt-manager-handle-column';
+
+// null = 尚未成功检测(列表还不存在),true/false = 已确认的宿主形态。
+let presetPromptHandleColumnHostState = null;
+
+function detectPresetPromptHandleColumnHost() {
+    if (presetPromptHandleColumnHostState !== null) {
+        return presetPromptHandleColumnHostState;
+    }
+
+    const list = document.querySelector(`#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}`);
+    if (!list) {
+        return false;
+    }
+
+    let probe = null;
+    let row = list.querySelector('li.completion_prompt_manager_prompt');
+    if (!row) {
+        probe = document.createElement('li');
+        probe.className = 'completion_prompt_manager_prompt';
+        probe.style.display = 'none';
+        list.append(probe);
+        row = probe;
+    }
+
+    try {
+        const value = getComputedStyle(row).getPropertyValue(PRESET_PROMPT_HANDLE_COLUMN_VARIABLE);
+        presetPromptHandleColumnHostState = String(value || '').trim() !== '';
+    } catch {
+        presetPromptHandleColumnHostState = false;
+    } finally {
+        probe?.remove();
+    }
+
+    return presetPromptHandleColumnHostState;
+}
+
 function applyPresetDragOptimizationCss() {
     const existingStyle = document.getElementById(PRESET_DRAG_STYLE_ID);
 
@@ -77,6 +117,14 @@ function applyPresetDragOptimizationCss() {
         existingStyle?.remove();
         return;
     }
+
+    // TT 宿主上手柄占流内第 1 列,条目行需要四列模板与其 grid-column 2/3/4 的
+    // 子元素指定对齐;原生 ST 手柄绝对定位不占列,维持三列。列表头两边都无手柄
+    // 列,始终三列。
+    const hostHandleColumnInflow = detectPresetPromptHandleColumnHost();
+    const promptRowGridColumns = hostHandleColumnInflow
+        ? `var(${PRESET_PROMPT_HANDLE_COLUMN_VARIABLE}, 28px) minmax(0, 1fr) max-content max-content`
+        : 'minmax(0, 1fr) max-content max-content';
 
     const css = `
 ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_READY_CLASS} li.completion_prompt_manager_prompt {
@@ -382,9 +430,13 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     white-space: nowrap;
 }
 
-#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} li.completion_prompt_manager_list_head,
-#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} li.completion_prompt_manager_prompt {
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} li.completion_prompt_manager_list_head {
     grid-template-columns: minmax(0, 1fr) max-content max-content !important;
+    column-gap: 6px !important;
+}
+
+#completion_prompt_manager ${PRESET_PROMPT_MANAGER_LIST_SELECTOR} li.completion_prompt_manager_prompt {
+    grid-template-columns: ${promptRowGridColumns} !important;
     column-gap: 6px !important;
 }
 
@@ -707,6 +759,15 @@ ${PRESET_PROMPT_MANAGER_LIST_SELECTOR}.${PRESET_DRAG_ACTIVE_CLASS} li.completion
     width: auto !important;
     justify-self: end !important;
     text-align: right;
+}
+
+/* TT 宿主给条目子元素显式指定了 grid-column 2/3/4(手柄占第 1 列);全局库条目
+   的标记是绝对定位不占列、行模板保持三列,这里把子元素归位到自然流。原生 ST
+   不设置 grid-column,auto 即默认值,无影响。 */
+#completion_prompt_manager .bai-bai-preset-global-library-outside li.completion_prompt_manager_prompt > .completion_prompt_manager_prompt_name,
+#completion_prompt_manager .bai-bai-preset-global-library-outside li.completion_prompt_manager_prompt > span:nth-of-type(3),
+#completion_prompt_manager .bai-bai-preset-global-library-outside li.completion_prompt_manager_prompt > .prompt_manager_prompt_tokens {
+    grid-column: auto !important;
 }
 
 #completion_prompt_manager .bai-bai-preset-global-library-outside .bai-bai-preset-global-library-row-marker {
@@ -1071,6 +1132,23 @@ body.${PRESET_VUE_DRAGGING_BODY_CLASS} #completion_prompt_manager ${PRESET_PROMP
     padding-left: 20px !important;
     list-style: none !important;
     list-style-type: none !important;
+}
+
+/* 拖拽克隆/ghost 行手柄为绝对定位、行模板三列。ghost 留在列表内,TT 宿主的
+   grid-column 2/3/4 子元素规则会命中它,归位到自然流;原生 ST 上为无效覆盖。 */
+.${PRESET_DRAG_CLONE_CLASS}.completion_prompt_manager_prompt > .completion_prompt_manager_prompt_name,
+.${PRESET_DRAG_CLONE_CLASS}.completion_prompt_manager_prompt > span:nth-of-type(3),
+.${PRESET_DRAG_CLONE_CLASS}.completion_prompt_manager_prompt > .prompt_manager_prompt_tokens,
+.bai-bai-preset-vue-sortable-ghost.completion_prompt_manager_prompt > .completion_prompt_manager_prompt_name,
+.bai-bai-preset-vue-sortable-ghost.completion_prompt_manager_prompt > span:nth-of-type(3),
+.bai-bai-preset-vue-sortable-ghost.completion_prompt_manager_prompt > .prompt_manager_prompt_tokens,
+.bai-bai-preset-vue-sortable-fallback.completion_prompt_manager_prompt > .completion_prompt_manager_prompt_name,
+.bai-bai-preset-vue-sortable-fallback.completion_prompt_manager_prompt > span:nth-of-type(3),
+.bai-bai-preset-vue-sortable-fallback.completion_prompt_manager_prompt > .prompt_manager_prompt_tokens,
+.bai-bai-preset-vue-sortable-drag.completion_prompt_manager_prompt > .completion_prompt_manager_prompt_name,
+.bai-bai-preset-vue-sortable-drag.completion_prompt_manager_prompt > span:nth-of-type(3),
+.bai-bai-preset-vue-sortable-drag.completion_prompt_manager_prompt > .prompt_manager_prompt_tokens {
+    grid-column: auto !important;
 }
 
 .${PRESET_DRAG_CLONE_CLASS}.completion_prompt_manager_prompt::marker,
