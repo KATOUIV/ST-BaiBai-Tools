@@ -21,7 +21,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 import { applyPowerUserSettings, power_user } from '../../../power-user.js';
 import { sendMessageAs } from '../../../slash-commands.js';
 import { isAdmin } from '../../../user.js';
-import { debounce, download, getCharaFilename, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4 } from '../../../utils.js';
+import { debounce, download, getCharaFilename, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4, cancelDebounce } from '../../../utils.js';
 import { getCurrentPresetAPI as getRegexCurrentPresetAPI, getCurrentPresetName as getRegexCurrentPresetName, getScriptsByType as getRegexScriptsByType, runRegexScript, SCRIPT_TYPES as REGEX_SCRIPT_TYPES, substitute_find_regex } from '../../regex/engine.js';
 const CURRENT_VERSION = '0.29.3';
 const LOCAL_ASSET_VERSION = getLocalAssetVersion(CURRENT_VERSION);
@@ -206,7 +206,11 @@ const CUSTOM_CSS_CODEMIRROR_EXTERNAL_READ_SELECTOR = [
     '#native-search-dropdown-new .vce-search-item-new',
 ].join(', ');
 const CUSTOM_CSS_DARK_BACKGROUND_LUMINANCE_THRESHOLD = 0.45;
-const CUSTOM_CSS_THEME_SYNC_SETTLE_DELAYS_MS = [0, 50, 160, 500, 1000];
+// 指数退避:首个 microtask + rAF 已覆盖立即同步,settle 只兜底晚到的原生写入。
+const CUSTOM_CSS_THEME_SYNC_SETTLE_DELAYS_MS = [80, 320, 1000];
+const THEME_APPLY_REFLOW_GUARD_WINDOW_MS = 1500;
+const THEME_APPLY_REFLOW_GUARD_PATCH_KEY = '__baiBaiToolkitThemeApplyReflowGuardPatched';
+const THEME_APPLY_REFLOW_GUARD_METRICS = ['scrollHeight', 'clientHeight'];
 const CUSTOM_CSS_RESTORE_SYNC_SETTLE_DELAYS_MS = [0, 80, 200, 500];
 const DESCRIPTION_CODEMIRROR_CDN_MODULES = {
     state: 'https://esm.sh/@codemirror/state@6?bundle',
@@ -946,6 +950,8 @@ function syncCustomCssCodeMirrorFromThemeChange() {
 }
 
 function scheduleCustomCssCodeMirrorThemeSync() {
+    beginThemeApplyReflowGuardWindow();
+
     const state = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY];
 
     if (!state?.enabled) {
@@ -987,11 +993,14 @@ function scheduleCustomCssCodeMirrorThemeSync() {
         }
     };
 
-    queueCustomCssThemeSyncPass(state, token, () => sync('microtask'));
-
+    // 不做 microtask 首发:它会跑在主题 apply 同一个长任务里(实测在 mousedown
+    // 任务内加 200ms+),而 themeSyncPending 已防止期间的陈旧写回。rAF 首发落在
+    // apply 任务之外,settle 定时器兜底 rAF 被冻结(标签页隐藏)的情况。
     if (typeof requestAnimationFrame === 'function') {
         const frame = requestAnimationFrame(() => sync('animation frame'));
         state.themeSyncFrames.push(frame);
+    } else {
+        queueCustomCssThemeSyncPass(state, token, () => sync('microtask'));
     }
 
     for (const delay of CUSTOM_CSS_THEME_SYNC_SETTLE_DELAYS_MS) {
@@ -1018,6 +1027,194 @@ function queueCustomCssThemeSyncPass(state, token, callback) {
             state.themeSyncTimers.push(timer);
         }
     }
+}
+
+// 原生 applyTheme 对 bogus_folders / zoomed_avatar_magnification 两个键不比对
+// 新旧值就调 printCharactersDebounced(),100ms 后触发角色列表全量重建(实测在
+// 主题切换的脏样式窗口里单次 1.4s+)。绝大多数主题根本不改这两个值——切换前
+// 快照、切换后值没变就取消那次重刷。
+function snapshotThemePrintCharactersKeys() {
+    // 快照为 null 时 cancel 直接跳过——与守卫窗口共用“切换美化优化”开关。
+    if (!settings.customCssShadowPropertyEnabled) {
+        return null;
+    }
+
+    return {
+        bogusFolders: power_user.bogus_folders,
+        zoomedAvatarMagnification: power_user.zoomed_avatar_magnification,
+    };
+}
+
+function cancelThemePrintCharactersIfUnchanged(snapshot) {
+    if (!snapshot
+        || power_user.bogus_folders !== snapshot.bogusFolders
+        || power_user.zoomed_avatar_magnification !== snapshot.zoomedAvatarMagnification) {
+        return;
+    }
+
+    const printCharactersDebounced = scriptModule.printCharactersDebounced;
+
+    if (typeof printCharactersDebounced === 'function') {
+        cancelDebounce(printCharactersDebounced);
+    }
+}
+
+function getThemeApplyReflowGuardState() {
+    if (!extensionState.themeApplyReflowGuard) {
+        extensionState.themeApplyReflowGuard = {
+            installed: false,
+            windowUntil: 0,
+            cache: null,
+            originalGetters: null,
+            originalScrollTopSetter: null,
+            pendingScrollTop: null,
+            scrollTopFlushFrame: 0,
+            endTimer: null,
+        };
+    }
+
+    return extensionState.themeApplyReflowGuard;
+}
+
+// 主题切换会连续多次改写全局样式,期间任何对 #chat 的 scrollHeight/clientHeight
+// 读取都会强制整个文档同步 style recalc + layout(实测单次可达数百毫秒)。窗口
+// 开始时样式尚未失效、读取便宜,先预热缓存;窗口内一律返回缓存值,绝不在脏样
+// 式上重读。窗口外零开销。
+function beginThemeApplyReflowGuardWindow() {
+    // 整套主题切换守卫(reflow 缓存、scrollTop 延迟写、printCharacters 取消、
+    // 头像重扫推迟)统一挂在“切换美化优化”开关下:关闭即完全原生行为。
+    // 窗口从不开启时,prototype 补丁也不会安装。
+    if (!settings.customCssShadowPropertyEnabled) {
+        return;
+    }
+
+    const state = getThemeApplyReflowGuardState();
+    const windowActive = Date.now() < state.windowUntil && state.cache;
+    state.windowUntil = Date.now() + THEME_APPLY_REFLOW_GUARD_WINDOW_MS;
+
+    // 窗口已激活时只延长期限:此刻样式多半已脏,重新预热反而会强制一次全页布局。
+    // (捕获阶段的首次 begin 在样式失效前预热,后续 begin 沿用那份缓存。)
+    if (windowActive) {
+        return;
+    }
+
+    state.cache = new Map();
+    installThemeApplyReflowGuard(state);
+    prewarmThemeApplyReflowGuardCache(state);
+}
+
+function prewarmThemeApplyReflowGuardCache(state) {
+    const chat = document.getElementById('chat');
+
+    if (!(chat instanceof HTMLElement) || !state.cache) {
+        return;
+    }
+
+    for (const metric of THEME_APPLY_REFLOW_GUARD_METRICS) {
+        const originalGet = state.originalGetters?.[metric];
+
+        if (typeof originalGet === 'function') {
+            state.cache.set(metric, { value: originalGet.call(chat), at: Date.now() });
+        }
+    }
+}
+
+function installThemeApplyReflowGuard(state) {
+    if (state.installed) {
+        return;
+    }
+
+    const prototype = globalThis.Element?.prototype;
+
+    if (!prototype) {
+        return;
+    }
+
+    for (const metric of THEME_APPLY_REFLOW_GUARD_METRICS) {
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, metric);
+
+        if (!descriptor?.get || descriptor.get[THEME_APPLY_REFLOW_GUARD_PATCH_KEY]) {
+            continue;
+        }
+
+        const originalGet = descriptor.get;
+
+        state.originalGetters ||= {};
+        state.originalGetters[metric] = originalGet;
+
+        function guardedMetricGetter() {
+            if (this instanceof HTMLElement && this.id === 'chat' && Date.now() < state.windowUntil && state.cache) {
+                const entry = state.cache.get(metric);
+
+                if (entry) {
+                    return entry.value;
+                }
+
+                // 缓存未预热(切换时 #chat 不存在等边角情况):读一次并整窗复用。
+                // 窗口内绝不重读——中途样式已脏,重读就是一次全文档强制布局。
+                const value = originalGet.call(this);
+                state.cache.set(metric, { value, at: Date.now() });
+                return value;
+            }
+
+            return originalGet.call(this);
+        }
+
+        guardedMetricGetter[THEME_APPLY_REFLOW_GUARD_PATCH_KEY] = true;
+        guardedMetricGetter.__baiBaiToolkitOriginalMetricGetter = originalGet;
+
+        Object.defineProperty(prototype, metric, {
+            ...descriptor,
+            get: guardedMetricGetter,
+        });
+    }
+
+    installThemeApplyScrollTopWriteDeferral(state, prototype);
+
+    state.installed = true;
+}
+
+// 窗口内对 #chat 的 scrollTop 写入同样会在脏样式上强制 style recalc(实测单次
+// 200ms+)。把写入合并推迟到下一帧:浏览器先完成正常的样式/布局管线,rAF 里的
+// 写入就只是廉价的滚动位移。多次写入只保留最后一次(自动滚底本就幂等)。
+function installThemeApplyScrollTopWriteDeferral(state, prototype) {
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'scrollTop');
+
+    if (!descriptor?.set || descriptor.set[THEME_APPLY_REFLOW_GUARD_PATCH_KEY]) {
+        return;
+    }
+
+    const originalSet = descriptor.set;
+
+    function themeWindowScrollTopSetter(value) {
+        if (this instanceof HTMLElement && this.id === 'chat' && Date.now() < state.windowUntil) {
+            state.pendingScrollTop = { element: this, value };
+
+            if (!state.scrollTopFlushFrame && typeof requestAnimationFrame === 'function') {
+                state.scrollTopFlushFrame = requestAnimationFrame(() => {
+                    state.scrollTopFlushFrame = 0;
+                    const pending = state.pendingScrollTop;
+                    state.pendingScrollTop = null;
+
+                    if (pending?.element?.isConnected) {
+                        originalSet.call(pending.element, pending.value);
+                    }
+                });
+            }
+
+            return;
+        }
+
+        return originalSet.call(this, value);
+    }
+
+    themeWindowScrollTopSetter[THEME_APPLY_REFLOW_GUARD_PATCH_KEY] = true;
+    themeWindowScrollTopSetter.__baiBaiToolkitOriginalScrollTopSetter = originalSet;
+
+    Object.defineProperty(prototype, 'scrollTop', {
+        ...descriptor,
+        set: themeWindowScrollTopSetter,
+    });
 }
 
 function clearCustomCssCodeMirrorThemeSyncTimers(state = extensionState[CUSTOM_CSS_CODEMIRROR_EDITOR_KEY]) {
@@ -1102,6 +1299,8 @@ function applyBaibaokuThemeObject(theme, fallbackName) {
         throw new Error('Theme name is missing');
     }
 
+    beginThemeApplyReflowGuardWindow();
+    const themePrintCharactersSnapshot = snapshotThemePrintCharactersKeys();
     baibaokuThemePageCache.set(themeName, { ...theme, name: themeName });
 
     const applyNativeTheme = globalThis.baibaokuApplyNativeTheme;
@@ -1160,6 +1359,7 @@ function applyBaibaokuThemeObject(theme, fallbackName) {
         extensionState.customCssThemeApplyDepth = Math.max(0, (extensionState.customCssThemeApplyDepth || 1) - 1);
     }
 
+    cancelThemePrintCharactersIfUnchanged(themePrintCharactersSnapshot);
     scheduleCustomCssCodeMirrorThemeSync();
     syncThemeManagerAfterLazyThemeApply(themeName);
 }
@@ -4200,11 +4400,27 @@ function syncCustomCssStateFromSettings(reason = 'custom css settings sync', {
             const shouldSyncEditor = forceEditor || state.themeSyncPending || !state.dirty;
 
             if (shouldSyncEditor) {
-                state.dirty = false;
-                syncCustomCssCodeMirrorFromSource(state, { force: true });
-            }
+                const editorHidden = state.wrapper instanceof HTMLElement
+                    && state.wrapper.isConnected
+                    && state.wrapper.offsetParent === null;
 
-            editorSynced = getCustomCssCodeMirrorValue(state) === value;
+                if (editorHidden && getCustomCssCodeMirrorValue(state) !== value) {
+                    // 编辑器折叠在抽屉里时跳过昂贵的大文档 dispatch(主题切换的 CSS
+                    // 往往是整份替换)。只把 source 标记为待同步:抽屉展开的 class 变化
+                    // 会触发 editor refresh,由 clean-sync 补齐 doc。themeSyncPending
+                    // 保持置位,防止期间的 flush 把陈旧 doc 写回 power_user。
+                    state.dirty = false;
+                    state.editorThemeSyncDeferred = true;
+                    editorSynced = true;
+                } else {
+                    state.dirty = false;
+                    syncCustomCssCodeMirrorFromSource(state, { force: true });
+                    state.editorThemeSyncDeferred = false;
+                    editorSynced = getCustomCssCodeMirrorValue(state) === value;
+                }
+            } else {
+                editorSynced = getCustomCssCodeMirrorValue(state) === value;
+            }
         }
     }
 
@@ -4214,7 +4430,7 @@ function syncCustomCssStateFromSettings(reason = 'custom css settings sync', {
     const styleSynced = style?.textContent === value;
     const complete = originalInputSynced && sourceSynced && editorSynced && styleSynced;
 
-    if (complete && clearThemePending && state) {
+    if (complete && clearThemePending && state && !state.editorThemeSyncDeferred) {
         state.themeSyncPending = false;
     }
 
@@ -4346,6 +4562,7 @@ function getCustomCssCodeMirrorEditorState() {
             colorScheme: 'light',
             colorSchemeDirty: true,
             themeSyncPending: false,
+            editorThemeSyncDeferred: false,
             themeSyncToken: 0,
             themeSyncTimers: [],
             themeSyncFrames: [],
@@ -4413,7 +4630,22 @@ function installCustomCssCodeMirrorEditorGlobalListeners(state) {
         const target = event.target;
 
         if (target instanceof HTMLSelectElement && target.id === 'themes') {
+            cancelThemePrintCharactersIfUnchanged(state.themePrintCharactersSnapshot);
+            state.themePrintCharactersSnapshot = null;
             scheduleCustomCssCodeMirrorThemeSync();
+        }
+    };
+    // Capture phase runs before the core #themes change handler (applyTheme →
+    // applyCustomCSS), so the reflow guard window covers the synchronous apply
+    // storm too, not just the async settle work afterwards. The snapshot feeds
+    // the bubble handler, which cancels applyTheme's unconditional
+    // printCharactersDebounced() when the relevant keys didn't change.
+    const themeChangeCaptureHandler = (event) => {
+        const target = event.target;
+
+        if (target instanceof HTMLSelectElement && target.id === 'themes') {
+            beginThemeApplyReflowGuardWindow();
+            state.themePrintCharactersSnapshot = snapshotThemePrintCharactersKeys();
         }
     };
     const addListener = (target, type, handler, options) => {
@@ -4429,6 +4661,7 @@ function installCustomCssCodeMirrorEditorGlobalListeners(state) {
         addListener(target, 'click', clickHandler, true);
     }
 
+    addListener(document.querySelector('#themes'), 'change', themeChangeCaptureHandler, true);
     addListener(document.querySelector('#themes'), 'change', themeChangeHandler, false);
     addListener(window, 'pagehide', pageLifecycleHandler);
     addListener(window, 'pageshow', pageLifecycleHandler);
@@ -4673,7 +4906,15 @@ function refreshCustomCssCodeMirrorEditorTarget(state) {
         if (state.colorSchemeDirty) {
             updateCustomCssCodeMirrorColorScheme(state, source, state.wrapper);
         }
-        syncCustomCssCodeMirrorFromSourceIfClean(state);
+        if (state.editorThemeSyncDeferred) {
+            // 补齐主题切换时因编辑器不可见而推迟的 doc 同步。无条件收敛,避免
+            // themeSyncPending 悬置导致后续 flush 一直走“重同步”分支丢弃用户编辑。
+            syncCustomCssCodeMirrorFromSource(state, { force: true });
+            state.editorThemeSyncDeferred = false;
+            state.themeSyncPending = false;
+        } else {
+            syncCustomCssCodeMirrorFromSourceIfClean(state);
+        }
         bindCustomCssCodeMirrorEditorMutationObserver(state);
         return;
     }
@@ -5063,6 +5304,7 @@ function detachCustomCssCodeMirrorEditor(state) {
     state.syncingFromSource = false;
     state.loadingToken = null;
     state.themeSyncPending = false;
+    state.editorThemeSyncDeferred = false;
     state.themeSyncTimers = [];
     state.themeSyncFrames = [];
 }
@@ -11477,14 +11719,21 @@ function installCharacterListAvatarIntersectionObserver(state) {
 }
 
 function scheduleProcessCharacterListAvatars(state) {
+    // 角色列表渲染期间本函数被逐条 append 高频调用;定时器已挂就直接合并,
+    // 避免每条都 clearTimeout+setTimeout 的重排开销。
     if (state.processTimer) {
-        clearTimeout(state.processTimer);
+        return;
     }
+
+    // 主题切换窗口内 class/节点风暴会反复触发本调度;推迟到窗口结束后合并为一次全扫。
+    const themeGuard = extensionState.themeApplyReflowGuard;
+    const themeWindowRemaining = themeGuard ? themeGuard.windowUntil - Date.now() : 0;
+    const delay = themeWindowRemaining > 0 ? themeWindowRemaining : 0;
 
     state.processTimer = setTimeout(() => {
         state.processTimer = null;
         processCharacterListAvatars(state);
-    }, 0);
+    }, delay);
 }
 
 function processCharacterListAvatars(state) {

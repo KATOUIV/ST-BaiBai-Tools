@@ -6,4 +6,4 @@ package-lock.json
 .agents/
 .claude/
 .codex/
-.aionrs/
+.aionrs/Trace-*.json
