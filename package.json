@@ -12,7 +12,10 @@
   },
   "devDependencies": {
     "eslint": "^10.8.0",
+    "eslint-scope": "^9.1.2",
+    "espree": "^11.2.0",
     "globals": "^17.7.0",
+    "magic-string": "^1.1.0",
     "vite": "^7.3.3"
   },
   "dependencies": {
