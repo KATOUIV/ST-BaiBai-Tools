@@ -243,7 +243,7 @@ src/
   settings.html           设置面板模板(构建时经 ?raw 内联)
 ```
 
-宿主 SillyTavern 模块通过 `@sillytavern/*` 别名引用（如 `@sillytavern/script`、`@sillytavern/scripts/utils`），构建时解析为相对路径并保持 external，不会被打进产物。Vue、vue-draggable-next 与 CodeMirror 由 npm 依赖打包，按需懒加载。
+宿主 SillyTavern 模块通过 `@sillytavern/*` 别名引用（如 `@sillytavern/script`、`@sillytavern/scripts/utils`），构建时解析为相对路径并保持 external，不会被打进产物。Vue、vue-draggable-next 与 CodeMirror 由 npm 依赖打包，全部内联进单个 `dist/index.js`（云端/高延迟环境下单个大文件比多个懒加载 chunk 加载更快）。
 
 发版流程：改 `package.json` 的 `version` → `npm run build`（prebuild 自动同步 `manifest.json` 并刷新 `?ver=` 缓存参数）→ 提交 `src/`、`dist/` 与 `manifest.json`。
 

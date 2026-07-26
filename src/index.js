@@ -63,30 +63,3 @@ chatOptimizations.observeChatManagementPopupCleanup();
 applyFeatureSettings();
 jQuery(renderSettingsPanel);
 jQuery(() => floorDirectory.installFloorDirectory());
-
-// 空闲预热懒加载 chunk(Vue / vue-draggable / CodeMirror),
-// 让用户第一次打开预设分组、正则列表或 CodeMirror 编辑器时无需等待模块下载。
-// 只发起 import 不使用结果;失败静默(真正用到时各功能有自己的回退逻辑)。
-function prewarmLazyChunks() {
-    const jobs = [
-        () => import('vue'),
-        () => import('vue-draggable-next'),
-        () => loadDescriptionCodeMirrorModules(),
-    ];
-    for (const job of jobs) {
-        try {
-            const result = job();
-            if (result && typeof result.catch === 'function') {
-                result.catch(() => {});
-            }
-        } catch {
-            // ignore
-        }
-    }
-}
-
-if (typeof requestIdleCallback === 'function') {
-    requestIdleCallback(prewarmLazyChunks, { timeout: 10000 });
-} else {
-    setTimeout(prewarmLazyChunks, 3000);
-}

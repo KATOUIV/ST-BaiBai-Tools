@@ -63,6 +63,10 @@ export default defineConfig(({ mode }) => ({
         chunkFileNames: '[name].[hash].chunk.js',
         assetFileNames: '[name].[ext]',
         globals,
+        // 全部打进单个 index.js:云端/高延迟环境下,一个大文件(gzip 后一次
+        // 请求)比十来个懒加载 chunk 的多次往返加载得更快;Vue/CodeMirror 等
+        // 动态 import 会被内联,import() 调用点原样保留、立即 resolve。
+        inlineDynamicImports: true,
       },
       external: id => id in globals,
     },

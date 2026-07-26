@@ -2,8 +2,9 @@ import * as scriptModule from '@sillytavern/script';
 import { getRequestHeaders, saveSettingsDebounced } from '@sillytavern/script';
 import { applyPowerUserSettings, power_user } from '@sillytavern/scripts/power-user';
 import { cancelDebounce } from '@sillytavern/scripts/utils';
-import { BAIBAOKU_EARLY_BRIDGE_KEY, BAIBAOKU_THEME_COLOR_BINDINGS, BAIBAOKU_THEME_GET_URL, BAIBAOKU_THEME_LOADING_FIXED_CLASS, BAIBAOKU_THEME_LOADING_HOST_CLASS, BAIBAOKU_THEME_LOADING_OVERLAY_CLASS, BAIBAOKU_THEME_LOADING_SPINNER_CLASS, BAIBAOKU_THEME_LOADING_STYLE_ID, BAIBAOKU_THEME_POWER_USER_KEYS, CUSTOM_CSS_CODEMIRROR_EDITOR_KEY, CUSTOM_CSS_THEME_SYNC_SETTLE_DELAYS_MS, LAZY_THEME_CHANGE_GUARD_KEY, LOG_PREFIX, THEME_APPLY_REFLOW_GUARD_METRICS, THEME_APPLY_REFLOW_GUARD_PATCH_KEY, THEME_APPLY_REFLOW_GUARD_WINDOW_MS, THEME_MANAGER_BACKGROUND_BINDINGS_KEY, THEME_MANAGER_BACKGROUND_SELECTOR, THEME_MANAGER_PANEL_SELECTOR, THEME_MANAGER_THEME_ITEM_SELECTOR } from './constants.js';
+import { BAIBAOKU_EARLY_BRIDGE_KEY, BAIBAOKU_THEME_COLOR_BINDINGS, BAIBAOKU_THEME_GET_URL, BAIBAOKU_THEME_LOADING_FIXED_CLASS, BAIBAOKU_THEME_LOADING_HOST_CLASS, BAIBAOKU_THEME_LOADING_OVERLAY_CLASS, BAIBAOKU_THEME_LOADING_SPINNER_CLASS, BAIBAOKU_THEME_LOADING_STYLE_ID, BAIBAOKU_THEME_POWER_USER_KEYS, CUSTOM_CSS_CODEMIRROR_EDITOR_KEY, CUSTOM_CSS_THEME_SYNC_SETTLE_DELAYS_MS, LAZY_THEME_CHANGE_GUARD_KEY, LOG_PREFIX, THEME_APPLY_REFLOW_GUARD_METRICS, THEME_APPLY_REFLOW_GUARD_PATCH_KEY, THEME_APPLY_REFLOW_GUARD_WINDOW_MS, THEME_CACHE_SYNC_FETCH_KEY, THEME_DELETE_PATH, THEME_MANAGER_BACKGROUND_BINDINGS_KEY, THEME_MANAGER_BACKGROUND_SELECTOR, THEME_MANAGER_PANEL_SELECTOR, THEME_MANAGER_THEME_ITEM_SELECTOR, THEME_SAVE_PATH } from './constants.js';
 import { syncCustomCssStateFromSettings } from './customCss.js';
+import { getFetchRequestMethod, getFetchRequestUrl, isFetchRequest } from './gzipHook.js';
 import { extensionState, settings } from './state.js';
 const baibaokuThemePageCache = new Map();
 
@@ -81,6 +82,119 @@ function cacheBaibaokuCurrentThemeSnapshot(name) {
 
     baibaokuThemePageCache.set(cacheKey, theme);
     return true;
+}
+
+function getThemeMutationRequestPath(input, init) {
+    if (getFetchRequestMethod(input, init) !== 'POST') {
+        return '';
+    }
+
+    const rawUrl = getFetchRequestUrl(input);
+    if (!rawUrl) {
+        return '';
+    }
+
+    try {
+        const pathname = new URL(rawUrl, location.href).pathname;
+        return pathname === THEME_SAVE_PATH || pathname === THEME_DELETE_PATH ? pathname : '';
+    } catch {
+        return '';
+    }
+}
+
+async function getThemeMutationRequestBody(input, init) {
+    try {
+        if (typeof init?.body === 'string') {
+            return JSON.parse(init.body);
+        }
+
+        if (isFetchRequest(input) && !init?.body) {
+            return await input.clone().json();
+        }
+    } catch {
+        // 请求体解析失败时走 catch 后的兜底清空。
+    }
+
+    return null;
+}
+
+function syncThemePageCacheAfterMutation(pathname, body) {
+    const state = getLazyThemeChangeGuardState();
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+
+    if (!name) {
+        // 拿不到主题名就整体清空,宁可让下次切换重新请求,也不能留陈旧条目。
+        baibaokuThemePageCache.clear();
+        return;
+    }
+
+    if (pathname === THEME_DELETE_PATH) {
+        baibaokuThemePageCache.delete(name);
+        if (state.currentThemeName === name) {
+            state.currentThemeName = '';
+        }
+        return;
+    }
+
+    // 原生 saveTheme 的请求体就是完整主题对象,直接覆盖缓存;
+    // 同时更新 currentThemeName:保存后 power_user.theme 已指向该主题,
+    // 之后切走时的快照逻辑要以它为“当前主题”。
+    baibaokuThemePageCache.set(name, { ...body, name });
+    state.currentThemeName = name;
+}
+
+// 原生“更新/另存美化主题”(POST /api/themes/save)和删除主题不经过柏宝库,
+// 页面缓存 baibaokuThemePageCache 若不同步,保存后切走再切回会命中修改前的
+// 旧缓存,并经 applyTheme + saveSettingsDebounced 把旧值写回 settings,表现
+// 为“保存的修改丢了”。这里拦截成功响应,用请求体刷新缓存。
+function installThemePageCacheSyncFetchHook() {
+    const existing = globalThis[THEME_CACHE_SYNC_FETCH_KEY];
+    if (existing?.wrappedFetch) {
+        return existing;
+    }
+
+    const originalFetch = globalThis.fetch;
+    if (typeof originalFetch !== 'function') {
+        return null;
+    }
+
+    const state = {
+        originalFetch: originalFetch.bind(globalThis),
+        wrappedFetch: null,
+    };
+
+    state.wrappedFetch = async function baiBaiToolkitThemeCacheSyncFetch(input, init) {
+        let pathname = '';
+        let body = null;
+
+        try {
+            pathname = getThemeMutationRequestPath(input, init);
+            if (pathname) {
+                // 先取请求体:Request 流只能读一次,等响应回来后可能已被消费。
+                body = await getThemeMutationRequestBody(input, init);
+            }
+        } catch {
+            pathname = '';
+        }
+
+        const response = await state.originalFetch(input, init);
+
+        if (pathname && response?.ok) {
+            try {
+                syncThemePageCacheAfterMutation(pathname, body);
+            } catch (error) {
+                console.warn(`${LOG_PREFIX} Failed to sync theme page cache after ${pathname}:`, error);
+                baibaokuThemePageCache.clear();
+            }
+        }
+
+        return response;
+    };
+
+    state.wrappedFetch[THEME_CACHE_SYNC_FETCH_KEY] = true;
+    globalThis[THEME_CACHE_SYNC_FETCH_KEY] = state;
+    globalThis.fetch = state.wrappedFetch;
+    return state;
 }
 
 function applyBaibaokuThemeColorBindings() {
@@ -398,8 +512,9 @@ function queueCustomCssThemeSyncPass(state, token, callback) {
 
 // 原生 applyTheme 对 bogus_folders / zoomed_avatar_magnification 两个键不比对
 // 新旧值就调 printCharactersDebounced(),100ms 后触发角色列表全量重建(实测在
-// 主题切换的脏样式窗口里单次 1.4s+)。绝大多数主题根本不改这两个值——切换前
-// 快照、切换后值没变就取消那次重刷。
+// 主题切换的脏样式窗口里单次 1.4s+)。bogus_folders 真的会改变列表结构,变了
+// 就放行;zoomed_avatar_magnification 只在点击头像放大那一刻被读取(script.js
+// 的 zoom 逻辑),完全不影响角色列表 DOM——它引发的重刷无条件取消。
 function snapshotThemePrintCharactersKeys() {
     // 快照为 null 时 cancel 直接跳过——与守卫窗口共用“切换美化优化”开关。
     if (!settings.customCssShadowPropertyEnabled) {
@@ -408,14 +523,11 @@ function snapshotThemePrintCharactersKeys() {
 
     return {
         bogusFolders: power_user.bogus_folders,
-        zoomedAvatarMagnification: power_user.zoomed_avatar_magnification,
     };
 }
 
 function cancelThemePrintCharactersIfUnchanged(snapshot) {
-    if (!snapshot
-        || power_user.bogus_folders !== snapshot.bogusFolders
-        || power_user.zoomed_avatar_magnification !== snapshot.zoomedAvatarMagnification) {
+    if (!snapshot || power_user.bogus_folders !== snapshot.bogusFolders) {
         return;
     }
 
@@ -731,7 +843,34 @@ function applyBaibaokuThemeObject(theme, fallbackName) {
     syncThemeManagerAfterLazyThemeApply(themeName);
 }
 
+// 守卫窗口原来只在 #themes 的 change capture 阶段开启,但主题管理器等扩展的
+// 切换入口是点击条目 → 同步开始应用主题 → 之后才 dispatch change:开窗时样式
+// 已脏,预热读取本身变成一次全文档强制布局(实测 6x 节流下 1.2s)。改为在
+// pointerdown capture 阶段就开窗——此刻任何处理器都还没跑、样式干净,预热
+// 只是一次廉价读取;后续 mousedown/click/change 里的应用风暴全程命中缓存。
+// pointerdown 在 mouse/touch/pen 上都先于 mousedown 与 click。
+function installThemeSwitchPointerdownPrewarm() {
+    const state = getLazyThemeChangeGuardState();
+    if (state.pointerdownPrewarmInstalled || typeof document === 'undefined') {
+        return;
+    }
+
+    document.addEventListener('pointerdown', (event) => {
+        const target = event?.target;
+        if (target instanceof Element
+            && target.closest('#themes, #UI-presets-block, #theme-manager-panel')) {
+            // 内部自带“切换美化优化”开关与窗口激活判断,重复调用只延长期限。
+            beginThemeApplyReflowGuardWindow();
+        }
+    }, true);
+
+    state.pointerdownPrewarmInstalled = true;
+}
+
 function applyBaibaokuLazyThemeLoadingOptimization() {
+    installThemePageCacheSyncFetchHook();
+    installThemeSwitchPointerdownPrewarm();
+
     const state = getLazyThemeChangeGuardState();
     if (state.installed || typeof document === 'undefined') {
         return;
@@ -822,6 +961,8 @@ export {
     hideBaibaokuThemeLoadingOverlay,
     installThemeApplyReflowGuard,
     installThemeApplyScrollTopWriteDeferral,
+    installThemePageCacheSyncFetchHook,
+    installThemeSwitchPointerdownPrewarm,
     loadBaibaokuThemeByName,
     prewarmThemeApplyReflowGuardCache,
     queueCustomCssThemeSyncPass,
