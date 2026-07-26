@@ -9,27 +9,28 @@ import {
     saveSettings,
     saveSettingsDebounced,
     this_chid,
-} from '../../../../script.js';
-import * as scriptModule from '../../../../script.js';
-import { AutoComplete } from '../../../autocomplete/AutoComplete.js';
-import { extension_settings, extensionTypes, renderExtensionTemplateAsync, writeExtensionField } from '../../../extensions.js';
-import { selected_group } from '../../../group-chats.js';
-import { t } from '../../../i18n.js';
-import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
-import { isMobile, favsToHotswap } from '../../../RossAscends-mods.js';
-import { getPresetManager } from '../../../preset-manager.js';
-import { applyPowerUserSettings, power_user } from '../../../power-user.js';
-import { sendMessageAs } from '../../../slash-commands.js';
-import { isAdmin } from '../../../user.js';
-import { debounce, download, getCharaFilename, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4, cancelDebounce } from '../../../utils.js';
-import { getCurrentPresetAPI as getRegexCurrentPresetAPI, getCurrentPresetName as getRegexCurrentPresetName, getScriptsByType as getRegexScriptsByType, runRegexScript, SCRIPT_TYPES as REGEX_SCRIPT_TYPES, substitute_find_regex } from '../../regex/engine.js';
-const CURRENT_VERSION = '0.29.3';
-const LOCAL_ASSET_VERSION = getLocalAssetVersion(CURRENT_VERSION);
-const { SaveGenerateDisplay } = await importVersionedLocalModule('./saveGenerateDisplay.js');
-const chatOptimizations = await importVersionedLocalModule('./chatOptimizations.js');
-const presetOptimizations = await importVersionedLocalModule('./presetOptimizations.js');
-const worldInfoPageOptimization = await importVersionedLocalModule('./worldInfoPageOptimization.js');
-const floorDirectory = await importVersionedLocalModule('./floorDirectory.js');
+} from '@sillytavern/script';
+import * as scriptModule from '@sillytavern/script';
+import { AutoComplete } from '@sillytavern/scripts/autocomplete/AutoComplete';
+import { extension_settings, extensionTypes, renderExtensionTemplateAsync, writeExtensionField } from '@sillytavern/scripts/extensions';
+import { selected_group } from '@sillytavern/scripts/group-chats';
+import { t } from '@sillytavern/scripts/i18n';
+import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '@sillytavern/scripts/popup';
+import { isMobile, favsToHotswap } from '@sillytavern/scripts/RossAscends-mods';
+import { getPresetManager } from '@sillytavern/scripts/preset-manager';
+import { applyPowerUserSettings, power_user } from '@sillytavern/scripts/power-user';
+import { sendMessageAs } from '@sillytavern/scripts/slash-commands';
+import { isAdmin } from '@sillytavern/scripts/user';
+import { debounce, download, getCharaFilename, getFileText, regexFromString, resetScrollHeight, setInfoBlock, uuidv4, cancelDebounce } from '@sillytavern/scripts/utils';
+import { getCurrentPresetAPI as getRegexCurrentPresetAPI, getCurrentPresetName as getRegexCurrentPresetName, getScriptsByType as getRegexScriptsByType, runRegexScript, SCRIPT_TYPES as REGEX_SCRIPT_TYPES, substitute_find_regex } from '@sillytavern/scripts/extensions/regex/engine';
+import settingsTemplateHtml from './settings.html?raw';
+import { SaveGenerateDisplay } from './saveGenerateDisplay.js';
+import * as chatOptimizations from './chatOptimizations.js';
+import * as presetOptimizations from './presetOptimizations.js';
+import * as worldInfoPageOptimization from './worldInfoPageOptimization.js';
+import * as floorDirectory from './floorDirectory.js';
+
+const CURRENT_VERSION = __BBT_VERSION__;
 
 const LOG_PREFIX = '[柏宝箱]';
 const MODULE_NAME = getModuleName();
@@ -159,8 +160,6 @@ const REGEX_PRESET_GROUP_PORTABILITY_HANDLER_KEY = '__baiBaiToolkitRegexPresetGr
 const REGEX_VUE_NATIVE_RENDER_GUARD_KEY = '__baiBaiToolkitRegexVueNativeRenderGuard';
 const REGEX_VUE_MANAGER_ROOT_ID = 'bai_bai_toolkit_regex_vue_manager_root';
 const REGEX_VUE_MANAGER_STYLE_ID = 'bai_bai_toolkit_regex_vue_manager_style';
-const REGEX_VUE_MANAGER_MODULE_PATH = './vendor/vue.esm-browser.prod.js';
-const REGEX_VUE_DRAGGABLE_MODULE_PATH = './vendor/vue-draggable-next.esm-browser.prod.js';
 const CHARACTER_LIST_AVATAR_LAZY_LOAD_KEY = '__baiBaiToolkitCharacterListAvatarLazyLoad';
 const CHARACTER_LIST_AVATAR_LAZY_LOAD_STYLE_ID = 'bai_bai_toolkit_character_list_avatar_lazy_load_style';
 const REGEX_UNGROUPED_GROUP_ID = '__ungrouped';
@@ -183,7 +182,6 @@ const DESCRIPTION_CODEMIRROR_EDITOR_ID = 'bai_bai_description_codemirror_editor'
 const DESCRIPTION_CODEMIRROR_EDITOR_CLASS = 'bai-bai-toolkit-description-codemirror-editor';
 const DESCRIPTION_CODEMIRROR_BLUR_SAVE_DELAY_MS = 250;
 const DESCRIPTION_CODEMIRROR_HISTORY_MAX_LENGTH = 12000;
-const DESCRIPTION_CODEMIRROR_LOCAL_BUNDLE_PATH = './vendor/codemirror.bundle.js';
 const CUSTOM_CSS_INPUT_ID = 'customCSS';
 const CUSTOM_CSS_MAXIMIZED_SOURCE_SELECTOR = 'textarea.maximized_textarea[data-for="customCSS"]';
 const CUSTOM_CSS_STYLE_ID = 'custom-style';
@@ -212,15 +210,6 @@ const THEME_APPLY_REFLOW_GUARD_WINDOW_MS = 1500;
 const THEME_APPLY_REFLOW_GUARD_PATCH_KEY = '__baiBaiToolkitThemeApplyReflowGuardPatched';
 const THEME_APPLY_REFLOW_GUARD_METRICS = ['scrollHeight', 'clientHeight'];
 const CUSTOM_CSS_RESTORE_SYNC_SETTLE_DELAYS_MS = [0, 80, 200, 500];
-const DESCRIPTION_CODEMIRROR_CDN_MODULES = {
-    state: 'https://esm.sh/@codemirror/state@6?bundle',
-    view: 'https://esm.sh/@codemirror/view@6?bundle',
-    commands: 'https://esm.sh/@codemirror/commands@6?bundle',
-    css: 'https://esm.sh/@codemirror/lang-css@6?bundle',
-    language: 'https://esm.sh/@codemirror/language@6?bundle',
-    highlight: 'https://esm.sh/@lezer/highlight@1?bundle',
-    oneDark: 'https://esm.sh/@codemirror/theme-one-dark@6?bundle',
-};
 
 const CHARACTER_SEARCH_OPTIMIZATION_KEY = 'baiBaiToolkitCharacterSearchOptimization';
 const REGEX_CONTAINER_SELECTOR = '#regex_container';
@@ -532,37 +521,13 @@ function isEditableSelectionElement(element) {
     );
 }
 
-function getLocalAssetVersion(fallback = 'dev') {
-    try {
-        return new URL(import.meta.url).searchParams.get('v') || fallback;
-    } catch {
-        return fallback;
-    }
-}
-
-function versionedLocalUrl(path) {
-    const url = new URL(path, import.meta.url);
-    url.searchParams.set('v', LOCAL_ASSET_VERSION);
-    return url.href;
-}
-
-async function importVersionedLocalModule(path) {
-    return import(versionedLocalUrl(path));
-}
-
 async function loadVersionedSettingsTemplate() {
-    try {
-        const response = await fetch(versionedLocalUrl('./settings.html'));
-
-        if (!response.ok) {
-            throw new Error(`Failed to load settings.html: ${response.status} ${response.statusText}`);
-        }
-
-        return response.text();
-    } catch (error) {
-        console.debug(`${LOG_PREFIX} Versioned settings template load failed; falling back to SillyTavern template loader.`, error);
-        return renderExtensionTemplateAsync(MODULE_NAME, 'settings');
+    if (typeof settingsTemplateHtml === 'string' && settingsTemplateHtml.length > 0) {
+        return settingsTemplateHtml;
     }
+
+    console.debug(`${LOG_PREFIX} Bundled settings template unavailable; falling back to SillyTavern template loader.`);
+    return renderExtensionTemplateAsync(MODULE_NAME, 'settings');
 }
 
 function getModuleName() {
@@ -577,7 +542,7 @@ function getModuleName() {
 
     return currentPath
         .slice(markerIndex + extensionPathMarker.length)
-        .replace(/\/index\.js$/i, '');
+        .replace(/\/(?:dist\/)?index\.js$/i, '');
 }
 
 function getExtensionId() {
@@ -6555,7 +6520,7 @@ async function loadRegexVueModule() {
     const manager = getRegexVueManagerState();
 
     if (!manager.modulePromise) {
-        manager.modulePromise = import(new URL(REGEX_VUE_MANAGER_MODULE_PATH, import.meta.url).href);
+        manager.modulePromise = import('vue');
     }
 
     return manager.modulePromise;
@@ -6565,7 +6530,7 @@ async function loadRegexVueDraggableModule() {
     const manager = getRegexVueManagerState();
 
     if (!manager.draggableModulePromise) {
-        manager.draggableModulePromise = import(new URL(REGEX_VUE_DRAGGABLE_MODULE_PATH, import.meta.url).href);
+        manager.draggableModulePromise = import('vue-draggable-next');
     }
 
     return manager.draggableModulePromise;
@@ -12271,27 +12236,14 @@ async function loadDescriptionCodeMirrorModules() {
         return extensionState[DESCRIPTION_CODEMIRROR_MODULES_KEY];
     }
 
-    const localUrl = new URL(DESCRIPTION_CODEMIRROR_LOCAL_BUNDLE_PATH, import.meta.url).href;
-
-    try {
-        const localBundle = await import(localUrl);
-
-        if (localBundle.EditorState && localBundle.EditorView) {
-            extensionState[DESCRIPTION_CODEMIRROR_MODULES_KEY] = localBundle;
-            return localBundle;
-        }
-    } catch {
-        // No local bundle is expected during early testing.
-    }
-
     const [stateModule, viewModule, commandsModule, cssModule, languageModule, highlightModule, oneDarkModule] = await Promise.all([
-        import(DESCRIPTION_CODEMIRROR_CDN_MODULES.state),
-        import(DESCRIPTION_CODEMIRROR_CDN_MODULES.view),
-        import(DESCRIPTION_CODEMIRROR_CDN_MODULES.commands),
-        import(DESCRIPTION_CODEMIRROR_CDN_MODULES.css).catch(() => ({})),
-        import(DESCRIPTION_CODEMIRROR_CDN_MODULES.language).catch(() => ({})),
-        import(DESCRIPTION_CODEMIRROR_CDN_MODULES.highlight).catch(() => ({})),
-        import(DESCRIPTION_CODEMIRROR_CDN_MODULES.oneDark).catch(() => ({})),
+        import('@codemirror/state'),
+        import('@codemirror/view'),
+        import('@codemirror/commands'),
+        import('@codemirror/lang-css').catch(() => ({})),
+        import('@codemirror/language').catch(() => ({})),
+        import('@lezer/highlight').catch(() => ({})),
+        import('@codemirror/theme-one-dark').catch(() => ({})),
     ]);
 
     const modules = {

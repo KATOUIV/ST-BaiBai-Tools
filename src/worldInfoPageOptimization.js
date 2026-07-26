@@ -4,11 +4,11 @@ import {
     event_types,
     eventSource,
     this_chid,
-} from '../../../../script.js';
-import { AutoComplete } from '../../../autocomplete/AutoComplete.js';
-import { isMobile } from '../../../RossAscends-mods.js';
-import { getCharaFilename, resetScrollHeight } from '../../../utils.js';
-import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
+} from '@sillytavern/script';
+import { AutoComplete } from '@sillytavern/scripts/autocomplete/AutoComplete';
+import { isMobile } from '@sillytavern/scripts/RossAscends-mods';
+import { getCharaFilename, resetScrollHeight } from '@sillytavern/scripts/utils';
+import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from '@sillytavern/scripts/popup';
 import {
     loadWorldInfo,
     METADATA_KEY as WORLD_INFO_METADATA_KEY,
@@ -17,7 +17,7 @@ import {
     setWIOriginalDataValue,
     world_info,
     world_names,
-} from '../../../world-info.js';
+} from '@sillytavern/scripts/world-info';
 
 let settings = {};
 let extensionState = {};
@@ -262,7 +262,6 @@ const WORLD_INFO_DRAWER_ANIMATION_STYLE_ID = 'bai_bai_toolkit_world_info_drawer_
 const WORLD_INFO_LAZY_SELECT2_PATCH_KEY = '__baiBaiToolkitWorldInfoLazySelect2Patched';
 const WORLD_INFO_CHARACTER_FILTER_APPEND_PATCH_KEY = '__baiBaiToolkitWorldInfoCharacterFilterAppendPatched';
 const WORLD_INFO_VUE_LIST_OPTIMIZATION_KEY = '__baiBaiToolkitWorldInfoVueListOptimization';
-const WORLD_INFO_VUE_LIST_MODULE_PATH = './vendor/vue.esm-browser.prod.js';
 const WORLD_INFO_MOBILE_HEADER_LAYOUT_STYLE_ID = 'bai_bai_toolkit_world_info_mobile_header_layout_style';
 const WORLD_INFO_EDITOR_SELECT_GROUPING_DATASET_KEY = 'baiBaiToolkitWorldInfoEditorSelectGrouped';
 const WORLD_INFO_EDITOR_SELECT_SEARCH_DATASET_KEY = 'baiBaiToolkitWorldInfoEditorSelectSearch';
@@ -4585,7 +4584,7 @@ function unmountWorldInfoVueListApp(state = getWorldInfoVueListOptimizationState
 
 async function loadWorldInfoVueListModule(state = getWorldInfoVueListOptimizationState()) {
     if (!state.modulePromise) {
-        state.modulePromise = import(new URL(WORLD_INFO_VUE_LIST_MODULE_PATH, import.meta.url).href);
+        state.modulePromise = import('vue');
     }
 
     return state.modulePromise;

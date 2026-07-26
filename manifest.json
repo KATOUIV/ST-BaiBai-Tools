@@ -3,9 +3,9 @@
     "loading_order": -1000,
     "requires": [],
     "optional": [],
-    "js": "bootstrap.js",
+    "js": "dist/index.js?ver=0.30.0",
     "author": "柏柏",
-    "version": "0.29.7",
+    "version": "0.30.0",
     "homePage": "",
     "auto_update": false
 }

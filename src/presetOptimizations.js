@@ -1,16 +1,16 @@
-import { event_types, eventSource, getCurrentChatId, getRequestHeaders, saveSettings } from '../../../../script.js';
-import * as scriptModule from '../../../../script.js';
-import { extension_settings } from '../../../extensions.js';
-import * as groupChatsModule from '../../../group-chats.js';
-import { oai_settings, openai_setting_names, openai_settings, promptManager, settingsToUpdate } from '../../../openai.js';
-import { getPresetManager } from '../../../preset-manager.js';
-import { getTokenizerModel } from '../../../tokenizers.js';
-import { t } from '../../../i18n.js';
-import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
-import { INJECTION_POSITION } from '../../../PromptManager.js';
-import { isMobile } from '../../../RossAscends-mods.js';
-import { renderTemplateAsync } from '../../../templates.js';
-import { debounce, escapeHtml, getStringHash, uuidv4 } from '../../../utils.js';
+import { event_types, eventSource, getCurrentChatId, getRequestHeaders, saveSettings } from '@sillytavern/script';
+import * as scriptModule from '@sillytavern/script';
+import { extension_settings } from '@sillytavern/scripts/extensions';
+import * as groupChatsModule from '@sillytavern/scripts/group-chats';
+import { oai_settings, openai_setting_names, openai_settings, promptManager, settingsToUpdate } from '@sillytavern/scripts/openai';
+import { getPresetManager } from '@sillytavern/scripts/preset-manager';
+import { getTokenizerModel } from '@sillytavern/scripts/tokenizers';
+import { t } from '@sillytavern/scripts/i18n';
+import { callGenericPopup, POPUP_TYPE } from '@sillytavern/scripts/popup';
+import { INJECTION_POSITION } from '@sillytavern/scripts/PromptManager';
+import { isMobile } from '@sillytavern/scripts/RossAscends-mods';
+import { renderTemplateAsync } from '@sillytavern/scripts/templates';
+import { debounce, escapeHtml, getStringHash, uuidv4 } from '@sillytavern/scripts/utils';
 
 const PRESET_PROMPT_CODEMIRROR_EDITOR_KEY = '__baiBaiToolkitPresetPromptCodeMirrorEditor';
 const PRESET_PROMPT_CODEMIRROR_EDITOR_STYLE_ID = 'bai_bai_toolkit_preset_prompt_codemirror_editor_style';
@@ -75,8 +75,6 @@ const PRESET_VUE_TOP_LEVEL_DRAGGABLE_CLASS = 'bai-bai-preset-top-level-draggable
 const PRESET_VUE_GROUP_CHILD_DRAGGABLE_CLASS = 'bai-bai-preset-group-child-draggable';
 const PRESET_VUE_TOP_LEVEL_DRAGGABLE_SELECTOR = `>li:is(.${PRESET_VUE_TOP_LEVEL_DRAGGABLE_CLASS},.completion_prompt_manager_prompt_draggable)`;
 const PRESET_VUE_LIST_GAP_VARIABLE = '--bai-bai-preset-list-gap';
-const PRESET_VUE_MODULE_PATH = './vendor/vue.esm-browser.prod.js';
-const PRESET_VUE_DRAGGABLE_MODULE_PATH = './vendor/vue-draggable-next.esm-browser.prod.js';
 const PRESET_VUE_HEADER_ENTRY_ID = '__bai_bai_preset_header';
 const PRESET_VUE_SEPARATOR_ENTRY_ID = '__bai_bai_preset_separator';
 const PRESET_VUE_GLOBAL_LIBRARY_ENTRY_ID = '__bai_bai_preset_global_library';
@@ -5411,7 +5409,7 @@ async function loadPresetVueModule() {
     const manager = getPresetVuePromptListManagerState();
 
     if (!manager.modulePromise) {
-        manager.modulePromise = import(new URL(PRESET_VUE_MODULE_PATH, import.meta.url).href);
+        manager.modulePromise = import('vue');
     }
 
     return manager.modulePromise;
@@ -5421,7 +5419,7 @@ async function loadPresetVueDraggableModule() {
     const manager = getPresetVuePromptListManagerState();
 
     if (!manager.draggableModulePromise) {
-        manager.draggableModulePromise = import(new URL(PRESET_VUE_DRAGGABLE_MODULE_PATH, import.meta.url).href);
+        manager.draggableModulePromise = import('vue-draggable-next');
     }
 
     return manager.draggableModulePromise;
@@ -17148,7 +17146,9 @@ function attachPresetPromptCodeMirrorEditor(state, source) {
 
             if (state.enabled && state.source === source && state.wrapper === wrapper && state.loadingToken === loadingToken) {
                 settings.presetPromptCodeMirrorEditorEnabled = false;
-                saveExtensionSettings();
+                if (typeof savePresetOptimizationSettings === 'function') {
+                    savePresetOptimizationSettings();
+                }
                 $('#bai_bai_toolkit_preset_prompt_codemirror_editor_enabled').prop('checked', false);
                 removePresetPromptCodeMirrorEditorOptimization();
             }

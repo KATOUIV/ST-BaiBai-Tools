@@ -9,12 +9,12 @@ import {
     selectCharacterById,
     setActiveCharacter,
     this_chid,
-} from '../../../../script.js';
-import * as scriptModule from '../../../../script.js';
-import { t } from '../../../i18n.js';
-import { power_user } from '../../../power-user.js';
-import { isMobile } from '../../../RossAscends-mods.js';
-import { timestampToMoment } from '../../../utils.js';
+} from '@sillytavern/script';
+import * as scriptModule from '@sillytavern/script';
+import { t } from '@sillytavern/scripts/i18n';
+import { power_user } from '@sillytavern/scripts/power-user';
+import { isMobile } from '@sillytavern/scripts/RossAscends-mods';
+import { timestampToMoment } from '@sillytavern/scripts/utils';
 
 const REDUCE_LOADED_FLOORS_FETCH_KEY = '__baiBaiToolkitReduceLoadedFloorsFetchPatched';
 const REDUCE_LOADED_FLOORS_LIMIT = 10;
@@ -5370,7 +5370,10 @@ async function getMessageCompletionSoundPlaybackSrc() {
 
     if (source === 'builtin') {
         const builtin = getMessageCompletionSoundBuiltin();
-        return new URL(`./video/${builtin.file}`, import.meta.url).href;
+        // 音频文件保留在插件根目录 video/,构建产物在 dist/ 下运行,需要回退一级。
+        // 用变量拼接路径,避免 Vite 对 new URL(字面量, import.meta.url) 的静态资源分析。
+        const videoBase = '../video/';
+        return new URL(videoBase + builtin.file, import.meta.url).href;
     }
 
     if (source === 'url') {
